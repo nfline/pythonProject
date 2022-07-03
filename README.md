@@ -1,2 +1,2 @@
 # pythonProject
-www
+test
