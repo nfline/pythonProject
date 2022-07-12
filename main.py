@@ -12,7 +12,7 @@ test = 'sasasadsdadsasasasasas'\
     'sawwwqqqq'
 print (test)
 
-##for循环##
+##for循环，打印结束默认换行##
 
 asd = 'nfline'
 
@@ -21,3 +21,8 @@ for n in asd:
 ##if测试##
 if 'e' in asd:
     print('e in asd nfline')
+##for循环，打印不换行##
+qaz='nflinejiayou'
+
+for c in qaz:
+    print(c,end='')
