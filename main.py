@@ -26,3 +26,4 @@ qaz='nflinejiayou'
 
 for c in qaz:
     print(c,end='')
+
