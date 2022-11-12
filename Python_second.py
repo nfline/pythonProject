@@ -17,3 +17,4 @@ c='Python'
 d=c[1:6]
 e=c[0:2]
 print(d+'-'+e)
+
