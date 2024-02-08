@@ -1,6 +1,7 @@
-print('hello keep study')
-
 import random
+
+a=random.random()
+print(a)
 
 
 
