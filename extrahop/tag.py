@@ -5,12 +5,11 @@ import base64
 import concurrent.futures
 
 # API Credentials and Setup
-HOST = "**.api.cloud.extrahop.com"
-ID = " paste "
-SECRET = " paste "
-TAG = " tag name "
-EXCEL_FILE = "device.xlsx"
-
+HOST = "***.api.cloud.extrahop.com"
+ID = "Paste API key here"
+SECRET = "Paste API secret here"
+TAG = "Paste tag name"
+EXCEL_FILE = "device.xlsx"  # This should be an Excel file
 def get_token():
     auth = f"{ID}:{SECRET}".encode('utf-8')
     headers = {
