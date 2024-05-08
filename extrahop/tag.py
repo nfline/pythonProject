@@ -4,11 +4,11 @@ from openpyxl.styles import PatternFill
 import base64
 
 # API Credentials and Setup
-HOST = "[subdomain].api.cloud.extrahop.com"
-ID = "paste id"
-SECRET = "paste to here"
-TAG = "tag name"
-EXCEL_FILE = "device.xlsx"  # This should be an Excel file
+HOST = "**".api.cloud.extrahop.com"
+ID = "***"
+SECRET = "***"
+TAG = "***"
+EXCEL_FILE = "device.xlsx"  # Ensure this is the correct file path
 
 def get_token():
     """Generate and retrieve a temporary API access token."""
@@ -33,37 +33,41 @@ def get_tag_id(tag_name):
     tags = response.json() if response.status_code == 200 else []
     return next((tag['id'] for tag in tags if tag['name'] == tag_name), None)
 
-def find_devices_by_ip_or_name(sheet):
-    """Retrieve devices based on IP addresses or names from an Excel file."""
-    devices = []
-    headers = {"Authorization": get_auth_header()}
-    for row in sheet.iter_rows(min_row=2, max_row=sheet.max_row, min_col=1, max_col=1):
-        value = row[0].value
-        if not value:
-            continue
-        field = "ipaddr" if '.' in value else "name"
-        url = f"https://{HOST}/api/v1/devices/search"
-        data = {"filter": {"field": field, "operand": value.strip(), "operator": "="}}
-        response = requests.post(url, headers=headers, json=data)
-        if response.status_code == 200 and response.json():
-            devices.extend(response.json())
-        else:
-            row[0].fill = PatternFill(start_color="FFFF00", fill_type="solid")  # Yellow for not found
-    return devices
-
-def assign_tag(tag_id, devices, sheet):
-    """Assign the specified tag to a list of devices using POST method."""
+def find_and_assign_tags(sheet, tag_id):
+    """Retrieve devices by name or IP and assign tags, handling dynamic column locations."""
     headers = {"Authorization": get_auth_header(), "Content-Type": "application/json"}
-    url = f"https://{HOST}/api/v1/tags/{tag_id}/devices"
-    device_ids = [device['id'] for device in devices]
-    data = {"assign": device_ids, "unassign": []}
-    response = requests.post(url, headers=headers, json=data)
-    if response.status_code != 204:
-        for device in devices:
-            # Find the row with the device ID and color it red
-            for row in sheet.iter_rows(min_row=2, max_row=sheet.max_row, min_col=1, max_col=1):
-                if row[0].value == device['display_name']:
-                    row[0].fill = PatternFill(start_color="FF0000", fill_type="solid")  # Red for failed tagging
+    url_search = f"https://{HOST}/api/v1/devices/search"
+    url_assign = f"https://{HOST}/api/v1/tags/{tag_id}/devices"
+
+    # Identify columns for 'name' and 'ipaddr'
+    header_row = sheet[1]
+    name_col = ip_col = None
+    for cell in header_row:
+        if cell.value.lower() == 'name':
+            name_col = cell.column
+        elif cell.value.lower() == 'ipaddr':
+            ip_col = cell.column
+
+    # Process each row after the header
+    for row in sheet.iter_rows(min_row=2, max_row=sheet.max_row):
+        for col in (name_col, ip_col):
+            if col is None:
+                continue
+            value = row[col - 1].value  # Adjusting for zero-based index
+            if not value:
+                continue
+            field = 'ipaddr' if col == ip_col else 'name'
+            data = {"filter": {"field": field, "operand": value, "operator": "="}}
+            response = requests.post(url_search, headers=headers, json=data)
+            if response.status_code == 200 and response.json():
+                device_ids = [device['id'] for device in response.json()]
+                data_assign = {"assign": device_ids, "unassign": []}
+                response_assign = requests.post(url_assign, headers=headers, json=data_assign)
+                if response_assign.status_code == 204:
+                    print(f"Successfully assigned tag to {field}: {value}")
+            else:
+                # Device not found, color the row yellow
+                row[col - 1].fill = PatternFill(start_color="FFFF00", fill_type="solid")
 
 def main():
     wb = openpyxl.load_workbook(EXCEL_FILE)
@@ -73,11 +77,9 @@ def main():
         print(f"Tag {TAG} does not exist.")
         return
 
-    devices = find_devices_by_ip_or_name(sheet)
-    if devices:
-        assign_tag(tag_id, devices, sheet)
+    find_and_assign_tags(sheet, tag_id)
     wb.save("updated_" + EXCEL_FILE)
-    print("Workbook saved with color-coded results.")
+    print("Workbook saved with color-coded results for not found entries.")
 
 if __name__ == "__main__":
     main()
