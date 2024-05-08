@@ -44,12 +44,24 @@ def search_and_tag_devices(value, field, tag_id, headers):
 
 def process_excel_sheet(sheet, tag_id, headers):
     with concurrent.futures.ThreadPoolExecutor() as executor:
-        future_to_value = {executor.submit(search_and_tag_devices, row[0].value, 'name' if row[0].column == 1 else 'ipaddr', tag_id, headers): row for row in sheet.iter_rows(min_row=2, min_col=1, max_col=2)}
-        for future in concurrent.futures.as_completed(future_to_value):
+        # Create a mapping of future tasks to row values for tracking
+        future_to_row = {
+            executor.submit(search_and_tag_devices, row[0].value, 'name' if row[0].column == 1 else 'ipaddr', tag_id, headers): row
+            for row in sheet.iter_rows(min_row=2, min_col=1, max_col=2)
+        }
+        for future in concurrent.futures.as_completed(future_to_row):
             success, value = future.result()
-            row = future_to_value[future]
-            if not success:
-                row[0].fill = PatternFill(start_color="FFFF00", fill_type="solid")  # Yellow for not found or failed
+            row = future_to_row[future]
+            if success:
+                # Print a success message including the value that was successfully tagged
+                print(f"Successfully assigned tag to: {value}")
+            else:
+                # Color the cell yellow if the tagging failed
+                for cell in row:
+                    cell.fill = PatternFill(start_color="FFFF00", fill_type="solid")  # Yellow for not found or failed
+                # Print a message indicating the failure to tag for this value
+                print(f"Failed to assign tag to: {value}")
+
 
 def main():
     headers = {"Authorization": get_auth_header()}
