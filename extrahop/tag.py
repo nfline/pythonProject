@@ -2,16 +2,16 @@ import requests
 import openpyxl
 from openpyxl.styles import PatternFill
 import base64
+import concurrent.futures
 
 # API Credentials and Setup
-HOST = "**".api.cloud.extrahop.com"
-ID = "***"
-SECRET = "***"
-TAG = "***"
-EXCEL_FILE = "device.xlsx"  # Ensure this is the correct file path
+HOST = "**.api.cloud.extrahop.com"
+ID = " paste "
+SECRET = " paste "
+TAG = " tag name "
+EXCEL_FILE = "device.xlsx"
 
 def get_token():
-    """Generate and retrieve a temporary API access token."""
     auth = f"{ID}:{SECRET}".encode('utf-8')
     headers = {
         "Authorization": f"Basic {base64.b64encode(auth).decode('utf-8')}",
@@ -22,62 +22,45 @@ def get_token():
     return response.json()['access_token'] if response.status_code == 200 else None
 
 def get_auth_header():
-    """Retrieve the appropriate authorization header."""
     return f"Bearer {get_token()}"
 
-def get_tag_id(tag_name):
-    """Retrieve the ID of a tag based on its name."""
-    headers = {"Authorization": get_auth_header()}
+def get_tag_id(tag_name, headers):
     url = f"https://{HOST}/api/v1/tags"
     response = requests.get(url, headers=headers)
     tags = response.json() if response.status_code == 200 else []
     return next((tag['id'] for tag in tags if tag['name'] == tag_name), None)
 
-def find_and_assign_tags(sheet, tag_id):
-    """Retrieve devices by name or IP and assign tags, handling dynamic column locations."""
-    headers = {"Authorization": get_auth_header(), "Content-Type": "application/json"}
+def search_and_tag_devices(value, field, tag_id, headers):
     url_search = f"https://{HOST}/api/v1/devices/search"
-    url_assign = f"https://{HOST}/api/v1/tags/{tag_id}/devices"
+    data = {"filter": {"field": field, "operand": value, "operator": "="}}
+    response = requests.post(url_search, headers=headers, json=data)
+    if response.status_code == 200 and response.json():
+        device_ids = [device['id'] for device in response.json()]
+        url_assign = f"https://{HOST}/api/v1/tags/{tag_id}/devices"
+        data_assign = {"assign": device_ids, "unassign": []}
+        response_assign = requests.post(url_assign, headers=headers, json=data_assign)
+        return response_assign.status_code == 204, value
+    return False, value
 
-    # Identify columns for 'name' and 'ipaddr'
-    header_row = sheet[1]
-    name_col = ip_col = None
-    for cell in header_row:
-        if cell.value.lower() == 'name':
-            name_col = cell.column
-        elif cell.value.lower() == 'ipaddr':
-            ip_col = cell.column
-
-    # Process each row after the header
-    for row in sheet.iter_rows(min_row=2, max_row=sheet.max_row):
-        for col in (name_col, ip_col):
-            if col is None:
-                continue
-            value = row[col - 1].value  # Adjusting for zero-based index
-            if not value:
-                continue
-            field = 'ipaddr' if col == ip_col else 'name'
-            data = {"filter": {"field": field, "operand": value, "operator": "="}}
-            response = requests.post(url_search, headers=headers, json=data)
-            if response.status_code == 200 and response.json():
-                device_ids = [device['id'] for device in response.json()]
-                data_assign = {"assign": device_ids, "unassign": []}
-                response_assign = requests.post(url_assign, headers=headers, json=data_assign)
-                if response_assign.status_code == 204:
-                    print(f"Successfully assigned tag to {field}: {value}")
-            else:
-                # Device not found, color the row yellow
-                row[col - 1].fill = PatternFill(start_color="FFFF00", fill_type="solid")
+def process_excel_sheet(sheet, tag_id, headers):
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        future_to_value = {executor.submit(search_and_tag_devices, row[0].value, 'name' if row[0].column == 1 else 'ipaddr', tag_id, headers): row for row in sheet.iter_rows(min_row=2, min_col=1, max_col=2)}
+        for future in concurrent.futures.as_completed(future_to_value):
+            success, value = future.result()
+            row = future_to_value[future]
+            if not success:
+                row[0].fill = PatternFill(start_color="FFFF00", fill_type="solid")  # Yellow for not found or failed
 
 def main():
+    headers = {"Authorization": get_auth_header()}
     wb = openpyxl.load_workbook(EXCEL_FILE)
     sheet = wb.active
-    tag_id = get_tag_id(TAG)
+    tag_id = get_tag_id(TAG, headers)
     if not tag_id:
         print(f"Tag {TAG} does not exist.")
         return
 
-    find_and_assign_tags(sheet, tag_id)
+    process_excel_sheet(sheet, tag_id, headers)
     wb.save("updated_" + EXCEL_FILE)
     print("Workbook saved with color-coded results for not found entries.")
 
