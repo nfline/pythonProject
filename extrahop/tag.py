@@ -20,7 +20,7 @@ def get_token():
         "Content-Type": "application/x-www-form-urlencoded"
     }
     url = f"https://{HOST}/oauth2/token"
-    response = requests.post(url, headers=headers, data="grant_type=client_credentials")
+    response = requests.post(url, headers=headers, data="grant_type=client_credentials",verify=False))
     return response.json()['access_token'] if response.status_code == 200 else None
 
 
