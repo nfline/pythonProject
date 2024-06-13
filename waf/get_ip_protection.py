@@ -22,24 +22,27 @@ for ep_id in ep_ids:
     if response.status_code == 200:
         ip_protection_details = response.json()
         ip_protection_details['ep_id'] = formatted_ep_id
-        ip_protection_details['block_country_list'] = ', '.join(ip_protection_details['configs'].get('block_country_list', []))
         
-        # Extracting IPs based on their type
-        trust_ips = [item['ip'] for item in ip_protection_details['configs'].get('ip_list', []) if item['type'] == 'trust-ip']
-        block_ips = [item['ip'] for item in ip_protection_details['configs'].get('ip_list', []) if item['type'] == 'block-ip']
-        allow_only_ips = [item['ip'] for item in ip_protection_details['configs'].get('ip_list', []) if item['type'] == 'allow-only-ip']
-        
-        # Storing IPs as a comma-separated string
-        ip_protection_details['trust_ips'] = ', '.join(trust_ips)
-        ip_protection_details['block_ips'] = ', '.join(block_ips)
-        ip_protection_details['allow_only_ips'] = ', '.join(allow_only_ips)
-        
-        # Assume we can get app name from somewhere in the response or from another call; for now, adding a placeholder
-        ip_protection_details['app_name'] = 'App Name Placeholder'  # Adjust as necessary if available in the response
+        # Check if 'configs' is in the response before proceeding
+        if 'configs' in ip_protection_details:
+            ip_protection_details['block_country_list'] = ', '.join(ip_protection_details['configs'].get('block_country_list', []))
+            
+            # Extracting IPs based on their type
+            trust_ips = [item['ip'] for item in ip_protection_details['configs'].get('ip_list', []) if item['type'] == 'trust-ip']
+            block_ips = [item['ip'] for item in ip_protection_details['configs'].get('ip_list', []) if item['type'] == 'block-ip']
+            allow_only_ips = [item['ip'] for item in ip_protection_details['configs'].get('ip_list', []) if item['type'] == 'allow-only-ip']
+            
+            # Storing IPs as a comma-separated string
+            ip_protection_details['trust_ips'] = ', '.join(trust_ips)
+            ip_protection_details['block_ips'] = ', '.join(block_ips)
+            ip_protection_details['allow_only_ips'] = ', '.join(allow_only_ips)
+            
+            # Remove the nested 'configs' dictionary to avoid errors with DataFrame conversion
+            ip_protection_details.pop('configs', None)
 
-        # Remove the nested 'configs' dictionary to avoid errors with DataFrame conversion
-        ip_protection_details.pop('configs', None)
-        
+        # Add placeholder or method to fetch app name
+        ip_protection_details['app_name'] = 'App Name Placeholder'  # Adjust as necessary
+
         all_ip_protection_details.append(ip_protection_details)
     else:
         print(f"Failed to fetch IP protection details for EP ID {ep_id}: {response.status_code}")
