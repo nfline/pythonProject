@@ -11,7 +11,7 @@ ip_data = pd.read_excel('ips.xlsx')  # Ensure your IP addresses are in the first
 ip_list = ip_data.iloc[:, 0].tolist()
 
 # Dictionary to store the results
-results = {'IP Address': [], 'Hostnames': [], 'Service': []}
+results = {'IP Address': [], 'Hostnames': [], 'Service': [], 'Provider': [], 'ISP': []}
 
 # Iterate through each IP address and perform the search
 for ip in ip_list:
@@ -22,14 +22,21 @@ for ip in ip_list:
         # Extract hostnames
         hostnames = host_info.get('hostnames', [])
 
-        # Attempt to extract service from the 'cloud' dictionary
-        service = host_info.get('data', [{}])[0].get('cloud', {}).get('service', '')
+        # Attempt to extract service and provider from the 'cloud' dictionary
+        cloud_info = host_info.get('data', [{}])[0].get('cloud', {})
+        service = cloud_info.get('service', '')
+        provider = cloud_info.get('provider', '')
 
-        # Save to results if hostnames or service is found
-        if hostnames or service:
+        # Extract ISP information
+        isp = host_info.get('isp', '')
+
+        # Save to results if hostnames, service, provider, or ISP is found
+        if hostnames or service or provider or isp:
             results['IP Address'].append(ip)
             results['Hostnames'].append(", ".join(hostnames))
             results['Service'].append(service)
+            results['Provider'].append(provider)
+            results['ISP'].append(isp)
 
     except Exception as e:
         print(f"Error retrieving information for IP {ip}: {e}")
