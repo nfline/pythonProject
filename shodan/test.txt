@@ -1,0 +1,1 @@
+=IFERROR(IF(OR(VLOOKUP(lookup_value, table_array, col_index_num, [range_lookup])=0, VLOOKUP(lookup_value, table_array, col_index_num, [range_lookup])=""), "", VLOOKUP(lookup_value, table_array, col_index_num, [range_lookup])), "")
