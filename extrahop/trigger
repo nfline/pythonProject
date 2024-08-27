@@ -1,0 +1,20 @@
+var microsoftIPs = ["192.168.1.0/24", "192.168.2.0/24"]; 
+
+// check
+function isMicrosoftIP(ip) {
+    for (var i = 0; i < microsoftIPs.length; i++) {
+        if (Flow.server.ipaddr.inSubnet(microsoftIPs[i])) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// 
+if (isMicrosoftIP(Flow.server.ipaddr)) {
+    Application("Metrics App").commit({
+        'source_ip': Flow.client.ipaddr.toString(),
+        'destination_ip': Flow.server.ipaddr.toString(),
+        'application': Flow.application
+    });
+}
