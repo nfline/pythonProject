@@ -1,5 +1,5 @@
 # 步骤1：检查原始数据中的dest_ip
-index="*int_firewall_palo_traffic" (dvc_name=GAEQUXATIFWO1 OR dvc_name=GAEQUXATIFWO2 OR dvc_name=GAEQUXATIFWO3 OR dvc_name=GAEQUXATIFWO4) (src_translated_ip != "0.0.0.0")
+
 | head 5
 | table dest_ip
 
@@ -9,14 +9,14 @@ index="*int_firewall_palo_traffic" (dvc_name=GAEQUXATIFWO1 OR dvc_name=GAEQUXATI
 | table subnet
 
 # 步骤3：单个IP测试
-index="*int_firewall_palo_traffic" (dvc_name=GAEQUXATIFWO1 OR dvc_name=GAEQUXATIFWO2 OR dvc_name=GAEQUXATIFWO3 OR dvc_name=GAEQUXATIFWO4) (src_translated_ip != "0.0.0.0")
+
 | head 1
 | eval test_subnet="4.128.0.0/9"
 | eval match=if(cidrmatch(test_subnet, dest_ip), 1, 0)
 | table dest_ip, test_subnet, match
 
 # 步骤4：修改后的完整查询
-index="*int_firewall_palo_traffic" (dvc_name=GAEQUXATIFWO1 OR dvc_name=GAEQUXATIFWO2 OR dvc_name=GAEQUXATIFWO3 OR dvc_name=GAEQUXATIFWO4) (src_translated_ip != "0.0.0.0")
+
 | append [| inputlookup MS_IP.csv | eval type="subnet"]
 | eval match=0
 | foreach subnet [eval match=if(cidrmatch('$$', dest_ip), 1, match)]
@@ -24,7 +24,7 @@ index="*int_firewall_palo_traffic" (dvc_name=GAEQUXATIFWO1 OR dvc_name=GAEQUXATI
 | eval source_type=if(dest_port="80" OR dest_port="443", "Ports:80/443","Other Ports")
 | stats sum(bytes_out) as TotalBytes by source_type
 
-index="*int_firewall_palo_traffic" (dvc_name=GAEQUXATIFWO1 OR dvc_name=GAEQUXATIFWO2 OR dvc_name=GAEQUXATIFWO3 OR dvc_name=GAEQUXATIFWO4) (src_translated_ip != "0.0.0.0")
+
 | append [| inputlookup MS_IP.csv]
 | eval match=0
 | eval match=if(isnotnull(subnet) AND cidrmatch(subnet, dest_ip), 1, match)
