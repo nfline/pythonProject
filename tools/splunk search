@@ -10,3 +10,14 @@ index="*int_firewall_palo_traffic" (dvc_name=GAEQUXATIFWO1 OR dvc_name=GAEQUXATI
     dc(dest_ip) as UniqueDestinations
     by source_type
 | eval TotalBytes=round(TotalBytes/1024/1024, 2) . " MB"
+
+
+
+
+index="*int_firewall_palo_traffic" (dvc_name=GAEQUXATIFWO1 OR dvc_name=GAEQUXATIFWO2 OR dvc_name=GAEQUXATIFWO3 OR dvc_name=GAEQUXATIFWO4) (src_translated_ip != "0.0.0.0")
+| append [| inputlookup MS_IP.csv | eval type="subnet"]
+| eval is_match=if(type="subnet" AND cidrmatch(subnet, dest_ip), 1, 0)
+| stats max(is_match) as matched by dest_ip
+| where matched=0
+| head 10
+| table dest_ip, matched
