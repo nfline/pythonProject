@@ -17,18 +17,18 @@ index="*int_firewall_palo_traffic" (dvc_name=GAEQUXATIFWO1 OR dvc_name=GAEQUXATI
 
 # 步骤4：修改后的完整查询
 index="*int_firewall_palo_traffic" (dvc_name=GAEQUXATIFWO1 OR dvc_name=GAEQUXATIFWO2 OR dvc_name=GAEQUXATIFWO3 OR dvc_name=GAEQUXATIFWO4) (src_translated_ip != "0.0.0.0")
-| append [| inputlookup MS_IP.csv | rename subnet as network | eval is_subnet=1]
-| eval is_match=if(is_subnet=1, if(cidrmatch(network, dest_ip), 1, 0), null())
-| where isnull(is_match) OR is_match=0
-| table dest_ip, network, is_match
+| append [| inputlookup MS_IP.csv | eval type="subnet"]
+| eval match=0
+| foreach subnet [eval match=if(cidrmatch('$$', dest_ip), 1, match)]
+| where match=0
+| eval source_type=if(dest_port="80" OR dest_port="443", "Ports:80/443","Other Ports")
+| stats sum(bytes_out) as TotalBytes by source_type
 
 index="*int_firewall_palo_traffic" (dvc_name=GAEQUXATIFWO1 OR dvc_name=GAEQUXATIFWO2 OR dvc_name=GAEQUXATIFWO3 OR dvc_name=GAEQUXATIFWO4) (src_translated_ip != "0.0.0.0")
 | append [| inputlookup MS_IP.csv]
-| eval is_match=case(
-    isnotnull(subnet) AND isnotnull(dest_ip), if(cidrmatch(subnet, dest_ip), 1, 0),
-    true(), null()
-)
-| stats values(is_match) as matches by dest_ip
-| eval final_match=if(max(matches)=1, 1, 0)
-| where final_match=0
-| fields dest_ip
+| eval match=0
+| eval match=if(isnotnull(subnet) AND cidrmatch(subnet, dest_ip), 1, match)
+| where (isnotnull(dest_ip) AND match=0) OR isnull(dest_ip)
+| where isnotnull(dest_ip)
+| eval source_type=if(dest_port="80" OR dest_port="443", "Ports:80/443","Other Ports")
+| stats sum(bytes_out) as TotalBytes by source_type
