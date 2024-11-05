@@ -1,34 +1,24 @@
-# 步骤1：检查原始数据中的dest_ip
+# 步骤1：确认基础数据存在
 
-| head 5
-| table dest_ip
+| head 10
+| table _time, dest_ip, bytes_out
 
-# 步骤2：检查CSV数据
-| inputlookup MS_IP.csv
-| head 5
-| table subnet
+# 步骤2：检查append后的数据结构
 
-# 步骤3：单个IP测试
+| head 10
+| append [| inputlookup MS_IP.csv | eval type="subnet" | head 5]
+| table dest_ip, subnet, type
 
-| head 1
+# 步骤3：测试单个子网匹配
+
+| head 10
 | eval test_subnet="4.128.0.0/9"
 | eval match=if(cidrmatch(test_subnet, dest_ip), 1, 0)
+| where match=1
 | table dest_ip, test_subnet, match
 
-# 步骤4：修改后的完整查询
+# 步骤4：使用dedup来检查唯一的dest_ip
 
-| append [| inputlookup MS_IP.csv | eval type="subnet"]
-| eval match=0
-| foreach subnet [eval match=if(cidrmatch('$$', dest_ip), 1, match)]
-| where match=0
-| eval source_type=if(dest_port="80" OR dest_port="443", "Ports:80/443","Other Ports")
-| stats sum(bytes_out) as TotalBytes by source_type
-
-
-| append [| inputlookup MS_IP.csv]
-| eval match=0
-| eval match=if(isnotnull(subnet) AND cidrmatch(subnet, dest_ip), 1, match)
-| where (isnotnull(dest_ip) AND match=0) OR isnull(dest_ip)
-| where isnotnull(dest_ip)
-| eval source_type=if(dest_port="80" OR dest_port="443", "Ports:80/443","Other Ports")
-| stats sum(bytes_out) as TotalBytes by source_type
+| dedup dest_ip
+| head 10
+| table dest_ip
