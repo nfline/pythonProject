@@ -1,8 +1,7 @@
 index="*int_firewall_palo_traffic" (dvc_name=GAEQUXATIFWO1 OR dvc_name=GAEQUXATIFWO2 OR dvc_name=GAEQUXATIFWO3 OR dvc_name=GAEQUXATIFWO4)
-| eval match_any=0
-| lookup local=true MS_IP.csv subnet as network
+| lookup local=true MS_IP.csv subnet OUTPUT subnet AS network_range
 | eval match_any=case(
-    cidrmatch(network, dest_ip), 1,
-    true(), match_any)
+    cidrmatch(network_range, dest_ip), 1,
+    true(), 0)
 | head 10
-| table dest_ip, network, match_any
+| table dest_ip, network_range, match_any
