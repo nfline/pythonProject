@@ -1,3 +1,8 @@
+| makeresults
+| eval test_ip="20.190.190.132"
+| eval test_subnet="20.160.0.0/11"
+| eval does_match=cidrmatch(test_subnet, test_ip)
+| table test_ip, test_subnet, does_match
 # 测试特定IP和子网的匹配
 
 | eval test_ip="20.190.190.132"
