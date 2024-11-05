@@ -1,24 +1,20 @@
-# 步骤1：确认基础数据存在
+# 测试特定IP和子网的匹配
 
-| head 10
-| table _time, dest_ip, bytes_out
+| eval test_ip="20.190.190.132"
+| eval test_subnet="20.160.0.0/11"
+| eval should_match=if(cidrmatch(test_subnet, test_ip), 1, 0)
+| eval binary_ip=tonumber(replace(test_ip, "(\d+)\.(\d+)\.(\d+)\.(\d+)", "\1 * 256^3 + \2 * 256^2 + \3 * 256 + \4"))
+| eval binary_subnet=tonumber(replace(test_subnet, "(\d+)\.(\d+)\.(\d+)\.(\d+)/(\d+)", "\1 * 256^3 + \2 * 256^2 + \3 * 256 + \4"))
+| eval subnet_bits=replace(test_subnet, ".*?/(\d+)", "\1")
+| eval mask=if(subnet_bits=11, 0xFFE00000, 0)
+| eval ip_masked=binary_ip&mask
+| eval subnet_masked=binary_subnet&mask
+| eval manual_match=if(ip_masked=subnet_masked, 1, 0)
+| table test_ip, test_subnet, should_match, manual_match, binary_ip, binary_subnet, ip_masked, subnet_masked
 
-# 步骤2：检查append后的数据结构
+# 如果上述测试通过，使用这个完整查询
 
-| head 10
-| append [| inputlookup MS_IP.csv | eval type="subnet" | head 5]
-| table dest_ip, subnet, type
-
-# 步骤3：测试单个子网匹配
-
-| head 10
-| eval test_subnet="4.128.0.0/9"
-| eval match=if(cidrmatch(test_subnet, dest_ip), 1, 0)
-| where match=1
-| table dest_ip, test_subnet, match
-
-# 步骤4：使用dedup来检查唯一的dest_ip
-
-| dedup dest_ip
-| head 10
-| table dest_ip
+| append [| inputlookup MS_IP.csv | eval type="subnet"]
+| eval debug_match=if(subnet="20.160.0.0/11" AND isnotnull(dest_ip), cidrmatch(subnet, dest_ip), null())
+| where isnotnull(debug_match)
+| table dest_ip, subnet, debug_match
