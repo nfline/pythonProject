@@ -21,3 +21,14 @@ index="*int_firewall_palo_traffic" (dvc_name=GAEQUXATIFWO1 OR dvc_name=GAEQUXATI
 | eval is_match=if(is_subnet=1, if(cidrmatch(network, dest_ip), 1, 0), null())
 | where isnull(is_match) OR is_match=0
 | table dest_ip, network, is_match
+
+index="*int_firewall_palo_traffic" (dvc_name=GAEQUXATIFWO1 OR dvc_name=GAEQUXATIFWO2 OR dvc_name=GAEQUXATIFWO3 OR dvc_name=GAEQUXATIFWO4) (src_translated_ip != "0.0.0.0")
+| append [| inputlookup MS_IP.csv]
+| eval is_match=case(
+    isnotnull(subnet) AND isnotnull(dest_ip), if(cidrmatch(subnet, dest_ip), 1, 0),
+    true(), null()
+)
+| stats values(is_match) as matches by dest_ip
+| eval final_match=if(max(matches)=1, 1, 0)
+| where final_match=0
+| fields dest_ip
