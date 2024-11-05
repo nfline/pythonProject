@@ -2,15 +2,6 @@ index="*int_firewall_palo_traffic" (dvc_name=GAEQUXATIFWO1 OR dvc_name=GAEQUXATI
 | append [| inputlookup MS_IP.csv | eval type="subnet"]
 | eval is_match=if(type="subnet" AND cidrmatch(subnet, dest_ip), 1, 0)
 | stats max(is_match) as matched by dest_ip
-| where matched=0 
-| lookup local=true MS_IP.csv subnet OUTPUT subnet AS match_subnet
-| table dest_ip, match_subnet
-
-# 如果上面的测试查询工作正常，则使用完整查询：
-index="*int_firewall_palo_traffic" (dvc_name=GAEQUXATIFWO1 OR dvc_name=GAEQUXATIFWO2 OR dvc_name=GAEQUXATIFWO3 OR dvc_name=GAEQUXATIFWO4) (src_translated_ip != "0.0.0.0")
-| append [| inputlookup MS_IP.csv | eval type="subnet"]
-| eval is_match=if(type="subnet" AND cidrmatch(subnet, dest_ip), 1, 0)
-| stats max(is_match) as matched by dest_ip
 | where matched=0
 | eval source_type=if(dest_port="80" OR dest_port="443", "Ports:80/443","Other Ports")
 | stats sum(bytes_out) as TotalBytes by source_type
