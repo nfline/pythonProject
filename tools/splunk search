@@ -1,7 +1,7 @@
-index="*int_firewall_palo_traffic" (dvc_name=GAEQUXATIFWO1 OR dvc_name=GAEQUXATIFWO2 OR dvc_name=GAEQUXATIFWO3 OR dvc_name=GAEQUXATIFWO4)
-| lookup local=true MS_IP.csv subnet OUTPUT subnet AS network_range
-| eval match_any=case(
-    cidrmatch(network_range, dest_ip), 1,
-    true(), 0)
-| head 10
-| table dest_ip, network_range, match_any
+index="*int_firewall_palo_traffic" (dvc_name=GAEQUXATIFWO1 OR dvc_name=GAEQUXATIFWO2 OR dvc_name=GAEQUXATIFWO3 OR dvc_name=GAEQUXATIFWO4) (src_translated_ip != "0.0.0.0")
+| where NOT [| inputlookup MS_IP.csv 
+    | format "cidrmatch(\"%subnet%\", dest_ip)" 
+    | eval search = join(" OR ", format)
+    | return $search]
+| eval source_type=if(dest_port="80" OR dest_port="443", "Ports:80/443","Other Ports")
+| stats sum(bytes_out) as TotalBytes by source_type
