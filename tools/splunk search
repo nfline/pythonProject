@@ -1,23 +1,23 @@
+# 步骤1：检查原始数据中的dest_ip
 index="*int_firewall_palo_traffic" (dvc_name=GAEQUXATIFWO1 OR dvc_name=GAEQUXATIFWO2 OR dvc_name=GAEQUXATIFWO3 OR dvc_name=GAEQUXATIFWO4) (src_translated_ip != "0.0.0.0")
-| append [| inputlookup MS_IP.csv | eval type="subnet"]
-| eval is_match=if(type="subnet" AND cidrmatch(subnet, dest_ip), 1, 0)
-| stats max(is_match) as matched by dest_ip, bytes_out, dest_port
-| where matched=0
-| eval source_type=if(dest_port="80" OR dest_port="443", "Ports:80/443","Other Ports")
-| stats 
-    sum(bytes_out) as TotalBytes,
-    count as ConnectionCount,
-    dc(dest_ip) as UniqueDestinations
-    by source_type
-| eval TotalBytes=round(TotalBytes/1024/1024, 2) . " MB"
+| head 5
+| table dest_ip
 
+# 步骤2：检查CSV数据
+| inputlookup MS_IP.csv
+| head 5
+| table subnet
 
-
-
+# 步骤3：单个IP测试
 index="*int_firewall_palo_traffic" (dvc_name=GAEQUXATIFWO1 OR dvc_name=GAEQUXATIFWO2 OR dvc_name=GAEQUXATIFWO3 OR dvc_name=GAEQUXATIFWO4) (src_translated_ip != "0.0.0.0")
-| append [| inputlookup MS_IP.csv | eval type="subnet"]
-| eval is_match=if(type="subnet" AND cidrmatch(subnet, dest_ip), 1, 0)
-| stats max(is_match) as matched by dest_ip
-| where matched=0
-| head 10
-| table dest_ip, matched
+| head 1
+| eval test_subnet="4.128.0.0/9"
+| eval match=if(cidrmatch(test_subnet, dest_ip), 1, 0)
+| table dest_ip, test_subnet, match
+
+# 步骤4：修改后的完整查询
+index="*int_firewall_palo_traffic" (dvc_name=GAEQUXATIFWO1 OR dvc_name=GAEQUXATIFWO2 OR dvc_name=GAEQUXATIFWO3 OR dvc_name=GAEQUXATIFWO4) (src_translated_ip != "0.0.0.0")
+| append [| inputlookup MS_IP.csv | rename subnet as network | eval is_subnet=1]
+| eval is_match=if(is_subnet=1, if(cidrmatch(network, dest_ip), 1, 0), null())
+| where isnull(is_match) OR is_match=0
+| table dest_ip, network, is_match
