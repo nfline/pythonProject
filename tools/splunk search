@@ -1,0 +1,10 @@
+| makeresults 
+| inputlookup MS_IP.csv
+| fields subnet
+| eval search_command="index=\"*int_firewall_palo_traffic\" (dvc_name=GAEQUXATIFWO1 OR dvc_name=GAEQUXATIFWO2 OR dvc_name=GAEQUXATIFWO3 OR dvc_name=GAEQUXATIFWO4) (src_translated_ip != \"0.0.0.0\") NOT ("
+| eval search_command = search_command . if(isnull(subnet), "", "cidrmatch(\"" . subnet . "\", dest_ip) OR ")
+| stats values(search_command) as search_command
+| eval search_command=substr(search_command, 0, len(search_command)-3) . ")"
+| map search=$search_command$
+| eval source_type=if(dest_port="80" OR dest_port="443", "Ports:80/443","Other Ports")
+| stats sum(bytes_out) as TotalBytes by source_type
