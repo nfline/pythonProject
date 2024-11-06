@@ -1,25 +1,25 @@
-| makeresults
-| eval test_ip="20.190.190.132"
-| eval test_subnet="20.160.0.0/11"
-| eval does_match=cidrmatch(test_subnet, test_ip)
-| table test_ip, test_subnet, does_match
-# 测试特定IP和子网的匹配
+# 首先验证一下subsearch方法：
+index="*int_firewall_palo_traffic" (dvc_name=GAEQUXATIFWO1 OR dvc_name=GAEQUXATIFWO2 OR dvc_name=GAEQUXATIFWO3 OR dvc_name=GAEQUXATIFWO4) (src_translated_ip != "0.0.0.0")
+| eval found=0
+| map search="| inputlookup MS_IP.csv | where cidrmatch(subnet, \"$dest_ip$\") | eval found=1"
+| where found=0
+| head 10
+| table dest_ip, found
 
-| eval test_ip="20.190.190.132"
-| eval test_subnet="20.160.0.0/11"
-| eval should_match=if(cidrmatch(test_subnet, test_ip), 1, 0)
-| eval binary_ip=tonumber(replace(test_ip, "(\d+)\.(\d+)\.(\d+)\.(\d+)", "\1 * 256^3 + \2 * 256^2 + \3 * 256 + \4"))
-| eval binary_subnet=tonumber(replace(test_subnet, "(\d+)\.(\d+)\.(\d+)\.(\d+)/(\d+)", "\1 * 256^3 + \2 * 256^2 + \3 * 256 + \4"))
-| eval subnet_bits=replace(test_subnet, ".*?/(\d+)", "\1")
-| eval mask=if(subnet_bits=11, 0xFFE00000, 0)
-| eval ip_masked=binary_ip&mask
-| eval subnet_masked=binary_subnet&mask
-| eval manual_match=if(ip_masked=subnet_masked, 1, 0)
-| table test_ip, test_subnet, should_match, manual_match, binary_ip, binary_subnet, ip_masked, subnet_masked
+# 如果上面测试成功，使用完整查询：
+index="*int_firewall_palo_traffic" (dvc_name=GAEQUXATIFWO1 OR dvc_name=GAEQUXATIFWO2 OR dvc_name=GAEQUXATIFWO3 OR dvc_name=GAEQUXATIFWO4) (src_translated_ip != "0.0.0.0")
+| eval found=0
+| map maxsearches=1000 search="| inputlookup MS_IP.csv | where cidrmatch(subnet, \"$dest_ip$\") | eval found=1"
+| where found=0
+| eval source_type=if(dest_port="80" OR dest_port="443", "Ports:80/443","Other Ports")
+| stats sum(bytes_out) as TotalBytes by source_type
 
-# 如果上述测试通过，使用这个完整查询
 
-| append [| inputlookup MS_IP.csv | eval type="subnet"]
-| eval debug_match=if(subnet="20.160.0.0/11" AND isnotnull(dest_ip), cidrmatch(subnet, dest_ip), null())
-| where isnotnull(debug_match)
-| table dest_ip, subnet, debug_match
+index="*int_firewall_palo_traffic" (dvc_name=GAEQUXATIFWO1 OR dvc_name=GAEQUXATIFWO2 OR dvc_name=GAEQUXATIFWO3 OR dvc_name=GAEQUXATIFWO4) (src_translated_ip != "0.0.0.0")
+| where NOT [| inputlookup MS_IP.csv 
+    | rename subnet as pattern
+    | format "cidrmatch(\"%pattern%\", dest_ip)" 
+    | eval search=join(" OR ", format)
+    | return $search$]
+| eval source_type=if(dest_port="80" OR dest_port="443", "Ports:80/443","Other Ports")
+| stats sum(bytes_out) as TotalBytes by source_type
