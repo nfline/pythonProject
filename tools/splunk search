@@ -1,25 +1,26 @@
-# 首先验证一下subsearch方法：
+# 先测试单个IP的匹配
 index="*int_firewall_palo_traffic" (dvc_name=GAEQUXATIFWO1 OR dvc_name=GAEQUXATIFWO2 OR dvc_name=GAEQUXATIFWO3 OR dvc_name=GAEQUXATIFWO4) (src_translated_ip != "0.0.0.0")
-| eval found=0
-| map search="| inputlookup MS_IP.csv | where cidrmatch(subnet, \"$dest_ip$\") | eval found=1"
-| where found=0
+| eval in_subnet=0
+| eval in_subnet=if(cidrmatch("4.128.0.0/9", dest_ip), 1, in_subnet)
+| eval in_subnet=if(cidrmatch("5.104.64.0/21", dest_ip), 1, in_subnet)
+| eval in_subnet=if(cidrmatch("13.64.0.0/11", dest_ip), 1, in_subnet)
+| eval in_subnet=if(cidrmatch("13.96.0.0/13", dest_ip), 1, in_subnet)
+| eval in_subnet=if(cidrmatch("13.104.0.0/14", dest_ip), 1, in_subnet)
+| eval in_subnet=if(cidrmatch("20.0.0.0/11", dest_ip), 1, in_subnet)
+| where in_subnet=0
 | head 10
-| table dest_ip, found
+| table dest_ip, in_subnet
 
-# 如果上面测试成功，使用完整查询：
+# 如果测试成功，使用完整查询
 index="*int_firewall_palo_traffic" (dvc_name=GAEQUXATIFWO1 OR dvc_name=GAEQUXATIFWO2 OR dvc_name=GAEQUXATIFWO3 OR dvc_name=GAEQUXATIFWO4) (src_translated_ip != "0.0.0.0")
-| eval found=0
-| map maxsearches=1000 search="| inputlookup MS_IP.csv | where cidrmatch(subnet, \"$dest_ip$\") | eval found=1"
-| where found=0
-| eval source_type=if(dest_port="80" OR dest_port="443", "Ports:80/443","Other Ports")
-| stats sum(bytes_out) as TotalBytes by source_type
-
-
-index="*int_firewall_palo_traffic" (dvc_name=GAEQUXATIFWO1 OR dvc_name=GAEQUXATIFWO2 OR dvc_name=GAEQUXATIFWO3 OR dvc_name=GAEQUXATIFWO4) (src_translated_ip != "0.0.0.0")
-| where NOT [| inputlookup MS_IP.csv 
-    | rename subnet as pattern
-    | format "cidrmatch(\"%pattern%\", dest_ip)" 
-    | eval search=join(" OR ", format)
-    | return $search$]
+| eval in_subnet=0
+| eval in_subnet=if(cidrmatch("4.128.0.0/9", dest_ip), 1, in_subnet)
+| eval in_subnet=if(cidrmatch("5.104.64.0/21", dest_ip), 1, in_subnet)
+| eval in_subnet=if(cidrmatch("13.64.0.0/11", dest_ip), 1, in_subnet)
+| eval in_subnet=if(cidrmatch("13.96.0.0/13", dest_ip), 1, in_subnet)
+| eval in_subnet=if(cidrmatch("13.104.0.0/14", dest_ip), 1, in_subnet)
+| eval in_subnet=if(cidrmatch("20.0.0.0/11", dest_ip), 1, in_subnet)
+[ ... 添加所有子网 ...]
+| where in_subnet=0
 | eval source_type=if(dest_port="80" OR dest_port="443", "Ports:80/443","Other Ports")
 | stats sum(bytes_out) as TotalBytes by source_type
