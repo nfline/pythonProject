@@ -4,7 +4,7 @@ import json
 
 # Azure CLI命令获取用户EMAIL列表
 def get_azure_users():
-    command = "az ad user list --query '[].mail' --output json"
+    command = 'az ad group member list --group "groupname" --query "[].mail" --output json'
     result = subprocess.run(command, shell=True, capture_output=True, text=True)
     if result.returncode != 0:
         raise Exception(f"Azure CLI command failed: {result.stderr}")
