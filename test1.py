@@ -9,7 +9,7 @@ def get_azure_users():
     result = subprocess.run(command, shell=True, capture_output=True, text=True)
     if result.returncode != 0:
         raise Exception(f"Azure CLI command failed: {result.stderr}")
-    emails = json.loads(result.stdout)
+    emails = [email.lower() for email in json.loads(result.stdout)]
     print(f"Azure users retrieved: {emails}")
     return emails
 
@@ -22,7 +22,7 @@ def get_1000eyes_users(api_token):
     if response.status_code != 200:
         raise Exception(f"ThousandEyes API request failed: {response.text}")
     users = response.json().get("users", [])
-    emails = [user["email"] for user in users if "email" in user]
+    emails = [user["email"].lower() for user in users if "email" in user]
     print(f"ThousandEyes users retrieved: {emails}")
     return emails
 
