@@ -27,17 +27,23 @@ def get_1000eyes_users(api_token):
     return emails
 
 # 创建新用户到ThousandEyes
-def create_1000eyes_user(api_token, email):
+def create_1000eyes_user(api_token, email, login_account_group_id, account_group_id, role_ids):
     url = "https://api.thousandeyes.com/v6/users.json"
     headers = {
         "Authorization": f"Bearer {api_token}",
         "Content-Type": "application/json"
     }
     payload = {
-        "firstName": email.split("@")[0],  # 使用邮箱前缀作为名字
-        "lastName": "User",
+        "name": email.split("@")[0],  # 使用邮箱前缀作为名字
         "email": email,
-        "roleId": 2  # 角色ID，根据实际情况调整
+        "loginAccountGroupId": login_account_group_id,
+        "accountGroupRoles": [
+            {
+                "accountGroupId": account_group_id,
+                "roleIds": role_ids
+            }
+        ],
+        "allAccountGroupRoleIds": role_ids
     }
     print(f"Creating user {email} in ThousandEyes...")
     response = requests.post(url, headers=headers, json=payload)
@@ -47,7 +53,7 @@ def create_1000eyes_user(api_token, email):
         print(f"Successfully created user: {email}")
 
 # 主逻辑
-def sync_users(api_token):
+def sync_users(api_token, login_account_group_id, account_group_id, role_ids):
     azure_users = get_azure_users()
     te_users = get_1000eyes_users(api_token)
     
@@ -57,11 +63,14 @@ def sync_users(api_token):
     if new_users:
         print(f"Creating {len(new_users)} new users in ThousandEyes...")
         for email in new_users:
-            create_1000eyes_user(api_token, email)
+            create_1000eyes_user(api_token, email, login_account_group_id, account_group_id, role_ids)
     else:
         print("No new users to create.")
 
 # 执行脚本
 if __name__ == "__main__":
     THOUSAND_EYES_API_TOKEN = "your_api_token_here"  # 请替换为你的API Token
-    sync_users(THOUSAND_EYES_API_TOKEN)
+    LOGIN_ACCOUNT_GROUP_ID = "your_login_account_group_id_here"  # 替换为正确的 loginAccountGroupId
+    ACCOUNT_GROUP_ID = "your_account_group_id_here"  # 替换为正确的 accountGroupId
+    ROLE_IDS = [57, 1140]  # 替换为正确的角色ID
+    sync_users(THOUSAND_EYES_API_TOKEN, LOGIN_ACCOUNT_GROUP_ID, ACCOUNT_GROUP_ID, ROLE_IDS)
