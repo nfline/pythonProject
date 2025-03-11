@@ -8,11 +8,7 @@ import concurrent.futures
 HOST = ("[subdomain].api.cloud.extrahop.com")
 ID = "paste api key here"
 SECRET = "paste api key here"
-TAG = "paste tag here"
 EXCEL_FILE = "device.xlsx"
-
-
-
 
 def get_token():
     """Generate and retrieve a temporary API access token."""
@@ -23,76 +19,129 @@ def get_token():
     }
     url = f"https://{HOST}/oauth2/token"
     response = requests.post(url, headers=headers, data="grant_type=client_credentials")
-    return response.json()['access_token'] if response.status_code == 200 else None
-
+    
+    if response.status_code != 200:
+        print(f"Failed to get token: {response.status_code}, Response: {response.text}")
+        return None
+    
+    try:
+        return response.json().get('access_token')
+    except requests.exceptions.JSONDecodeError:
+        print("Error decoding token response JSON.")
+        return None
 
 def get_auth_header():
     """Retrieve the authorization header with the token."""
-    return f"Bearer {get_token()}"
-
+    token = get_token()
+    if not token:
+        print("Authentication failed: No token retrieved.")
+        return None
+    return f"Bearer {token}"
 
 def get_tag_id(tag_name, headers):
     """Retrieve the ID of a tag based on its name."""
     url = f"https://{HOST}/api/v1/tags"
     response = requests.get(url, headers=headers)
-    tags = response.json() if response.status_code == 200 else []
-    return next((tag['id'] for tag in tags if tag['name'] == tag_name), None)
+    if response.status_code != 200:
+        print(f"Failed to fetch tags: {response.status_code}, Response: {response.text}")
+        return None
+    
+    try:
+        tags = response.json()
+        return next((tag['id'] for tag in tags if tag['name'] == tag_name), None)
+    except requests.exceptions.JSONDecodeError:
+        print("Error decoding tags response JSON.")
+        return None
 
+def create_tag(tag_name, headers):
+    """Create a new tag if it does not exist."""
+    url = f"https://{HOST}/api/v1/tags"
+    data = {"name": tag_name}
+    response = requests.post(url, headers=headers, json=data)
+    
+    if response.status_code != 201:
+        print(f"Failed to create tag: {tag_name}, Status: {response.status_code}, Response: {response.text}")
+        return None
+    
+    try:
+        return response.json().get('id')
+    except requests.exceptions.JSONDecodeError:
+        print("Error decoding tag creation response JSON.")
+        return None
 
 def search_and_tag_devices(value, field, tag_id, headers, cell):
     """Search and tag devices based on field and value, mark cell if not found."""
     url_search = f"https://{HOST}/api/v1/devices/search"
     data = {"filter": {"field": field, "operand": value, "operator": "="}}
     response = requests.post(url_search, headers=headers, json=data)
-    if response.status_code == 200 and response.json():
-        device_ids = [device['id'] for device in response.json()]
-        print(device_ids)
+    
+    if response.status_code != 200:
+        print(f"Device search failed: {response.status_code}, Response: {response.text}")
+        cell.fill = PatternFill(start_color="FFFF00", fill_type="solid")
+        return False
+    
+    try:
+        devices = response.json()
+        if not devices:
+            print(f"No devices found for: {field} {value}")
+            cell.fill = PatternFill(start_color="FFFF00", fill_type="solid")
+            return False
+        
+        device_ids = [device['id'] for device in devices]
         url_assign = f"https://{HOST}/api/v1/tags/{tag_id}/devices"
         data_assign = {"assign": device_ids}
         response_assign = requests.post(url_assign, headers=headers, json=data_assign)
+        
         if response_assign.status_code == 204:
             print(f"Successfully assigned tag to: {field} {value}")
             return True
-    print(f"Failed to assign tag to: {field} {value}")
-    cell.fill = PatternFill(start_color="FFFF00", fill_type="solid")  # Mark cell yellow if not found
+    except requests.exceptions.JSONDecodeError:
+        print("Error decoding device search response JSON.")
+    
+    cell.fill = PatternFill(start_color="FFFF00", fill_type="solid")
     return False
 
-
-def process_excel_sheet(sheet, tag_id, headers):
+def process_excel_sheet(sheet, headers):
     """Process each row for both name and ipaddr columns, mark and print results."""
-    name_col, ipaddr_col = None, None
-    # Determine which columns have 'name' and 'ipaddr'
-    for cell in sheet[1]:  # Assuming first row is headers
-        if cell.value.lower() == 'name':
+    name_col, ipaddr_col, tag_col = None, None, None
+    for cell in sheet[1]:
+        if cell.value and cell.value.lower() == 'name':
             name_col = cell.column
-        elif cell.value.lower() == 'ipaddr':
+        elif cell.value and cell.value.lower() == 'ipaddr':
             ipaddr_col = cell.column
+        elif cell.value and cell.value.lower() == 'tag':
+            tag_col = cell.column
 
     with concurrent.futures.ThreadPoolExecutor() as executor:
         futures = []
         for row in sheet.iter_rows(min_row=2):
-            if name_col is not None and row[name_col - 1].value:
-                futures.append(executor.submit(search_and_tag_devices, row[name_col - 1].value, 'name', tag_id, headers,
-                                               row[name_col - 1]))
-            if ipaddr_col is not None and row[ipaddr_col - 1].value:
-                futures.append(
-                    executor.submit(search_and_tag_devices, row[ipaddr_col - 1].value, 'ipaddr', tag_id, headers,
-                                    row[ipaddr_col - 1]))
+            tag_name = row[tag_col - 1].value if tag_col is not None else None
+            if not tag_name:
+                continue
+            tag_id = get_tag_id(tag_name, headers) or create_tag(tag_name, headers)
+            if not tag_id:
+                print(f"Skipping row, unable to retrieve or create tag: {tag_name}")
+                continue
 
+            if name_col is not None and row[name_col - 1].value:
+                futures.append(executor.submit(search_and_tag_devices, row[name_col - 1].value, 'name', tag_id, headers, row[name_col - 1]))
+            if ipaddr_col is not None and row[ipaddr_col - 1].value:
+                futures.append(executor.submit(search_and_tag_devices, row[ipaddr_col - 1].value, 'ipaddr', tag_id, headers, row[ipaddr_col - 1]))
 
 def main():
     headers = {"Authorization": get_auth_header()}
+    if not headers["Authorization"]:
+        print("Authentication failed. Exiting...")
+        return
+    
     wb = openpyxl.load_workbook(EXCEL_FILE)
     sheet = wb.active
-    tag_id = get_tag_id(TAG, headers)
-    if not tag_id:
-        print(f"Tag {TAG} does not exist.")
-        return
-
-    process_excel_sheet(sheet, tag_id, headers)
+    process_excel_sheet(sheet, headers)
     wb.save("updated_" + EXCEL_FILE)
     print("Workbook saved with color-coded results for not found entries.")
 
+if __name__ == "__main__":
+    main()
 
 if __name__ == "__main__":
     main()
