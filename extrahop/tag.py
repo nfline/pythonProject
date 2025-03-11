@@ -12,6 +12,8 @@ TAG = "paste tag here"
 EXCEL_FILE = "device.xlsx"
 
 
+
+
 def get_token():
     """Generate and retrieve a temporary API access token."""
     auth = f"{ID}:{SECRET}".encode('utf-8')
@@ -44,6 +46,7 @@ def search_and_tag_devices(value, field, tag_id, headers, cell):
     response = requests.post(url_search, headers=headers, json=data)
     if response.status_code == 200 and response.json():
         device_ids = [device['id'] for device in response.json()]
+        print(device_ids)
         url_assign = f"https://{HOST}/api/v1/tags/{tag_id}/devices"
         data_assign = {"assign": device_ids}
         response_assign = requests.post(url_assign, headers=headers, json=data_assign)
@@ -93,3 +96,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
