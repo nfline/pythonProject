@@ -49,25 +49,42 @@ def get_tag_id(tag_name, headers):
     try:
         tags = response.json()
         return next((tag['id'] for tag in tags if tag['name'] == tag_name), None)
+        if not tag_id:
+            print(f"Tag '{tag_name}' not found in API response.")  
+        return tag_id
     except requests.exceptions.JSONDecodeError:
-        print("Error decoding tags response JSON.")
+        print("Error decoding tags response JSON.")  
         return None
-
+    
 def create_tag(tag_name, headers):
     """Create a new tag if it does not exist."""
     url = f"https://{HOST}/api/v1/tags"
     data = {"name": tag_name}
     response = requests.post(url, headers=headers, json=data)
-    
     if response.status_code != 201:
-        print(f"Failed to create tag: {tag_name}, Status: {response.status_code}, Response: {response.text}")
+        print(f"[ERROR] Failed to create tag '{tag_name}': {response.status_code}, Response: {response.text}")
+        print(f"[DEBUG] Response Headers: {response.headers}")
         return None
-    
+
     try:
-        return response.json().get('id')
+        # First, try to get the ID from JSON response
+        tag_id = response.json().get('id')
     except requests.exceptions.JSONDecodeError:
-        print("Error decoding tag creation response JSON.")
+        print("[WARNING] No JSON in response, checking headers for tag ID...")
+        tag_id = None
+
+    # If JSON is empty, extract tag ID from 'Location' header
+    if not tag_id and 'Location' in response.headers:
+        tag_id = response.headers['Location'].split('/')[-1]  # Extract the last part of the URL (the ID)
+        print(f"[INFO] Extracted tag ID from Location header: {tag_id}")
+
+    if not tag_id:
+        print(f"[ERROR] Created tag '{tag_name}', but could not retrieve its ID!")
         return None
+
+    print(f"[INFO] Successfully created tag '{tag_name}' with ID: {tag_id}")
+    return tag_id
+
 
 def search_and_tag_devices(value, field, tag_id, headers, cell):
     """Search and tag devices based on field and value, mark cell if not found."""
