@@ -5,7 +5,6 @@ import base64
 import concurrent.futures
 import logging
 from datetime import datetime
-import os
 
 # Setup and API credentials
 HOST = ("[subdomain].api.cloud.extrahop.com")
