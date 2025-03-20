@@ -4,13 +4,34 @@ from openpyxl.styles import PatternFill
 import base64
 import concurrent.futures
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
+import time
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+from threading import Semaphore
 
 # Setup and API credentials
 HOST = ("[subdomain].api.cloud.extrahop.com")
 ID = "paste api key here"
 SECRET = "paste api key here"
 EXCEL_FILE = "device.xlsx"
+MAX_WORKERS = 10  # Maximum concurrent workers
+BATCH_SIZE = 100  # Batch processing size
+
+# Token caching
+class TokenCache:
+    def __init__(self):
+        self.token = None
+        self.expiry = None
+
+    def is_valid(self):
+        return self.token and self.expiry and datetime.now() < self.expiry
+
+    def set_token(self, token, expires_in=3600):
+        self.token = token
+        self.expiry = datetime.now() + timedelta(seconds=expires_in)
+
+token_cache = TokenCache()
 
 # Setup logging
 def setup_logging():
@@ -34,11 +55,29 @@ class TaggingStats:
         self.failed_ip_tags = set()
         self.created_tags = set()
         self.existing_tags = set()
+        self.processed_count = 0
+        self.start_time = None
 
 stats = TaggingStats()
 
+def create_session():
+    """Create a requests session with retry strategy"""
+    session = requests.Session()
+    retry_strategy = Retry(
+        total=3,
+        backoff_factor=1,
+        status_forcelist=[429, 500, 502, 503, 504],
+    )
+    adapter = HTTPAdapter(max_retries=retry_strategy)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
+
 def get_token():
-    """Generate and retrieve a temporary API access token."""
+    """Generate and retrieve a temporary API access token with caching."""
+    if token_cache.is_valid():
+        return token_cache.token
+
     auth = f"{ID}:{SECRET}".encode('utf-8')
     headers = {
         "Authorization": f"Basic {base64.b64encode(auth).decode('utf-8')}",
@@ -48,20 +87,23 @@ def get_token():
     response = requests.post(url, headers=headers, data="grant_type=client_credentials")
     
     if response.status_code != 200:
-        print(f"Failed to get token: {response.status_code}, Response: {response.text}")
+        logging.error(f"Failed to get token: {response.status_code}, Response: {response.text}")
         return None
     
     try:
-        return response.json().get('access_token')
+        token = response.json().get('access_token')
+        expires_in = response.json().get('expires_in', 3600)
+        token_cache.set_token(token, expires_in)
+        return token
     except requests.exceptions.JSONDecodeError:
-        print("Error decoding token response JSON.")
+        logging.error("Error decoding token response JSON.")
         return None
 
 def get_auth_header():
     """Retrieve the authorization header with the token."""
     token = get_token()
     if not token:
-        print("Authentication failed: No token retrieved.")
+        logging.error("Authentication failed: No token retrieved.")
         return None
     return f"Bearer {token}"
 
@@ -113,56 +155,69 @@ def create_tag(tag_name, headers):
     stats.created_tags.add(tag_name)
     return tag_id
 
-def search_and_tag_devices(value, field, tag_id, headers, cell):
-    """Search and tag devices based on field and value, mark cell if not found."""
+def batch_search_and_tag_devices(values, field, tag_id, headers, cells):
+    """Batch search and tag devices based on field and values."""
+    session = create_session()
     url_search = f"https://{HOST}/api/v1/devices/search"
-    data = {"filter": {"field": field, "operand": value, "operator": "="}}
-    response = requests.post(url_search, headers=headers, json=data)
     
-    if response.status_code != 200:
-        logging.error(f"Device search failed for {field} {value}: {response.status_code}, Response: {response.text}")
-        cell.fill = PatternFill(start_color="FFFF00", fill_type="solid")
-        if field == 'name':
-            stats.failed_name_tags.add(value)
+    # Track success/failure for each device
+    success_values = []
+    failed_values = []
+    success_cells = []
+    failed_cells = []
+    
+    # Search devices in batch
+    all_device_ids = []
+    for value, cell in zip(values, cells):
+        data = {"filter": {"field": field, "operand": value, "operator": "="}}
+        response = session.post(url_search, headers=headers, json=data)
+        
+        if response.status_code == 200:
+            try:
+                devices = response.json()
+                if devices:
+                    all_device_ids.extend([device['id'] for device in devices])
+                    success_values.append(value)
+                    success_cells.append(cell)
+                else:
+                    failed_values.append(value)
+                    failed_cells.append(cell)
+            except requests.exceptions.JSONDecodeError:
+                logging.error(f"Error decoding device search response JSON for {field} {value}")
+                failed_values.append(value)
+                failed_cells.append(cell)
         else:
-            stats.failed_ip_tags.add(value)
-        return False
+            failed_values.append(value)
+            failed_cells.append(cell)
     
-    try:
-        devices = response.json()
-        if not devices:
-            logging.warning(f"No devices found for: {field} {value}")
-            cell.fill = PatternFill(start_color="FFFF00", fill_type="solid")
-            if field == 'name':
-                stats.failed_name_tags.add(value)
-            else:
-                stats.failed_ip_tags.add(value)
-            return False
-        
-        device_ids = [device['id'] for device in devices]
-        url_assign = f"https://{HOST}/api/v1/tags/{tag_id}/devices"
-        data_assign = {"assign": device_ids}
-        response_assign = requests.post(url_assign, headers=headers, json=data_assign)
-        
-        if response_assign.status_code == 204:
-            logging.info(f"Successfully assigned tag to: {field} {value}")
+    # Mark failed cells
+    for cell in failed_cells:
+        cell.fill = PatternFill(start_color="FFFF00", fill_type="solid")
+    
+    if not all_device_ids:
+        return False
+
+    # Assign tags in batch
+    url_assign = f"https://{HOST}/api/v1/tags/{tag_id}/devices"
+    data_assign = {"assign": all_device_ids}
+    response_assign = session.post(url_assign, headers=headers, json=data_assign)
+    
+    if response_assign.status_code == 204:
+        # Only mark successful values
+        for value in success_values:
             if field == 'name':
                 stats.successful_name_tags.add(value)
             else:
                 stats.successful_ip_tags.add(value)
-            return True
-    except requests.exceptions.JSONDecodeError:
-        logging.error(f"Error decoding device search response JSON for {field} {value}")
+        return True
     
-    cell.fill = PatternFill(start_color="FFFF00", fill_type="solid")
-    if field == 'name':
-        stats.failed_name_tags.add(value)
-    else:
-        stats.failed_ip_tags.add(value)
+    # If tag assignment fails, mark all cells as failed
+    for cell in cells:
+        cell.fill = PatternFill(start_color="FFFF00", fill_type="solid")
     return False
 
 def process_excel_sheet(sheet, headers):
-    """Process each row for both name and ipaddr columns, mark and print results."""
+    """Process each row for both name and ipaddr columns with batch processing."""
     name_col, ipaddr_col, tag_col = None, None, None
     for cell in sheet[1]:
         if cell.value and cell.value.lower() == 'name':
@@ -172,45 +227,65 @@ def process_excel_sheet(sheet, headers):
         elif cell.value and cell.value.lower() == 'tag':
             tag_col = cell.column
 
-    if not all([name_col, ipaddr_col, tag_col]):
-        logging.error("Required columns (name, ipaddr, tag) not found in Excel file")
-        return
+    previous_tag = None
+    semaphore = Semaphore(MAX_WORKERS)
+    
+    def process_batch(values, field, cells, tag_id):
+        with semaphore:
+            return batch_search_and_tag_devices(values, field, tag_id, headers, cells)
 
-    last_tag_name = None
-    last_tag_id = None
-
-    with concurrent.futures.ThreadPoolExecutor() as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         futures = []
+        current_batch = []
+        current_cells = []
+        current_field = None
+        
         for row in sheet.iter_rows(min_row=2):
-            current_tag_name = row[tag_col - 1].value if tag_col is not None else None
+            tag_name = row[tag_col - 1].value if tag_col is not None else None
             
-            # If current tag is empty, use the last tag
-            if not current_tag_name:
-                if last_tag_name:
-                    current_tag_name = last_tag_name
-                    current_tag_id = last_tag_id
-                    logging.info(f"Using previous tag '{current_tag_name}' for row {row[0].row}")
-                else:
-                    logging.warning(f"Skipping row {row[0].row}: No tag specified and no previous tag available")
+            if not tag_name and previous_tag:
+                tag_name = previous_tag
+                row[tag_col - 1].value = tag_name
+            
+            if tag_name:
+                previous_tag = tag_name
+                tag_id = get_tag_id(tag_name, headers) or create_tag(tag_name, headers)
+                if not tag_id:
+                    logging.error(f"Skipping row, unable to retrieve or create tag: {tag_name}")
                     continue
-            else:
-                # Get or create new tag
-                current_tag_id = get_tag_id(current_tag_name, headers) or create_tag(current_tag_name, headers)
-                if not current_tag_id:
-                    logging.error(f"Skipping row {row[0].row}, unable to retrieve or create tag: {current_tag_name}")
-                    continue
-                last_tag_name = current_tag_name
-                last_tag_id = current_tag_id
 
-            # Process name and IP address
-            if name_col is not None and row[name_col - 1].value:
-                futures.append(executor.submit(search_and_tag_devices, row[name_col - 1].value, 'name', current_tag_id, headers, row[name_col - 1]))
-            if ipaddr_col is not None and row[ipaddr_col - 1].value:
-                futures.append(executor.submit(search_and_tag_devices, row[ipaddr_col - 1].value, 'ipaddr', current_tag_id, headers, row[ipaddr_col - 1]))
+                # Process name column
+                if name_col is not None and row[name_col - 1].value:
+                    if len(current_batch) >= BATCH_SIZE:
+                        futures.append(executor.submit(process_batch, current_batch.copy(), current_field, current_cells.copy(), tag_id))
+                        current_batch = []
+                        current_cells = []
+                    current_batch.append(row[name_col - 1].value)
+                    current_cells.append(row[name_col - 1])
+                    current_field = 'name'
+
+                # Process ipaddr column
+                if ipaddr_col is not None and row[ipaddr_col - 1].value:
+                    if len(current_batch) >= BATCH_SIZE:
+                        futures.append(executor.submit(process_batch, current_batch.copy(), current_field, current_cells.copy(), tag_id))
+                        current_batch = []
+                        current_cells = []
+                    current_batch.append(row[ipaddr_col - 1].value)
+                    current_cells.append(row[ipaddr_col - 1])
+                    current_field = 'ipaddr'
+
+        # Process the last batch
+        if current_batch:
+            futures.append(executor.submit(process_batch, current_batch, current_field, current_cells, tag_id))
+
+        # Wait for all tasks to complete
+        concurrent.futures.wait(futures)
 
 def print_summary():
     """Print a summary of all tagging operations."""
+    duration = datetime.now() - stats.start_time
     logging.info("\n=== Tagging Operation Summary ===")
+    logging.info(f"Total processing time: {duration}")
     logging.info(f"Created new tags: {len(stats.created_tags)}")
     logging.info(f"Used existing tags: {len(stats.existing_tags)}")
     logging.info(f"Successfully tagged by name: {len(stats.successful_name_tags)}")
@@ -231,6 +306,7 @@ def print_summary():
 def main():
     log_filename = setup_logging()
     logging.info("Starting tagging operations...")
+    stats.start_time = datetime.now()
     
     headers = {"Authorization": get_auth_header()}
     if not headers["Authorization"]:
@@ -248,5 +324,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 
