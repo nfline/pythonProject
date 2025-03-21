@@ -16,7 +16,6 @@ import warnings
 # Suppress SSL warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-
 # Setup and API credentials
 HOST = ("[subdomain].api.cloud.extrahop.com")
 ID = "paste api key here"
@@ -24,50 +23,21 @@ SECRET = "paste api key here"
 EXCEL_FILE = "device.xlsx"
 MAX_WORKERS = 10  # Maximum concurrent workers
 BATCH_SIZE = 100  # Batch processing size
-CACHE_EXPIRY = 7200  # Cache expiry in seconds (2 hours)
-DEVICE_SEARCH_BATCH = 50  # Number of devices to search in one API call
 
-# Token and Tag caching
-class Cache:
+# Token caching
+class TokenCache:
     def __init__(self):
-        self.data = None
+        self.token = None
         self.expiry = None
 
     def is_valid(self):
-        return self.data and self.expiry and datetime.now() < self.expiry
+        return self.token and self.expiry and datetime.now() < self.expiry
 
-    def set(self, data, expires_in=CACHE_EXPIRY):
-        self.data = data
+    def set_token(self, token, expires_in=3600):
+        self.token = token
         self.expiry = datetime.now() + timedelta(seconds=expires_in)
 
-    def get(self):
-        return self.data if self.is_valid() else None
-
-class TokenCache(Cache):
-    def set_token(self, token, expires_in=CACHE_EXPIRY):
-        self.set(token, expires_in)
-
-    def get_token(self):
-        return self.get()
-
-class TagCache(Cache):
-    def __init__(self):
-        super().__init__()
-        self.data = {}  # Dictionary of tag_name: tag_id
-
-    def get_tag_id(self, tag_name):
-        if self.is_valid() and tag_name in self.data:
-            return self.data[tag_name]
-        return None
-
-    def add_tag(self, tag_name, tag_id):
-        if not self.is_valid():
-            self.data = {}
-            self.expiry = datetime.now() + timedelta(seconds=CACHE_EXPIRY)
-        self.data[tag_name] = tag_id
-
 token_cache = TokenCache()
-tag_cache = TagCache()
 
 # Setup logging
 def setup_logging():
@@ -93,6 +63,20 @@ class TaggingStats:
         self.existing_tags = set()
         self.processed_count = 0
         self.start_time = None
+        self.consecutive_failures = 0
+        self.current_batch_size = BATCH_SIZE
+
+    def adjust_batch_size(self, success):
+        """Dynamically adjust batch size based on success/failure"""
+        if success:
+            self.consecutive_failures = 0
+            if self.current_batch_size < BATCH_SIZE:
+                self.current_batch_size = min(self.current_batch_size * 2, BATCH_SIZE)
+        else:
+            self.consecutive_failures += 1
+            if self.consecutive_failures >= 2:
+                self.current_batch_size = max(self.current_batch_size // 2, 10)
+                self.consecutive_failures = 0
 
 stats = TaggingStats()
 
@@ -111,31 +95,52 @@ def create_session():
     return session
 
 def get_token():
-    """Generate and retrieve a temporary API access token with caching."""
-    if token_cache.is_valid():
-        return token_cache.get_token()
+    """Generate and retrieve a temporary API access token with caching and retry logic."""
+    max_retries = 3
+    retry_delay = 2  # seconds
 
-    auth = f"{ID}:{SECRET}".encode('utf-8')
-    headers = {
-        "Authorization": f"Basic {base64.b64encode(auth).decode('utf-8')}",
-        "Content-Type": "application/x-www-form-urlencoded"
-    }
-    url = f"https://{HOST}/oauth2/token"
-    session = create_session()
-    response = session.post(url, headers=headers, data="grant_type=client_credentials", timeout=30)
-    
-    if response.status_code != 200:
-        logging.error(f"Failed to get token: {response.status_code}, Response: {response.text}")
-        return None
-    
-    try:
-        token = response.json().get('access_token')
-        expires_in = response.json().get('expires_in', CACHE_EXPIRY)
-        token_cache.set_token(token, expires_in)
-        return token
-    except requests.exceptions.JSONDecodeError:
-        logging.error("Error decoding token response JSON.")
-        return None
+    for attempt in range(max_retries):
+        if token_cache.is_valid():
+            return token_cache.token
+
+        try:
+            auth = f"{ID}:{SECRET}".encode('utf-8')
+            headers = {
+                "Authorization": f"Basic {base64.b64encode(auth).decode('utf-8')}",
+                "Content-Type": "application/x-www-form-urlencoded"
+            }
+            url = f"https://{HOST}/oauth2/token"
+            session = create_session()
+            response = session.post(url, headers=headers, data="grant_type=client_credentials", timeout=30)
+            
+            if response.status_code == 200:
+                try:
+                    token_data = response.json()
+                    token = token_data.get('access_token')
+                    expires_in = token_data.get('expires_in', 3600)
+                    
+                    if not token:
+                        logging.error("Token not found in response")
+                        time.sleep(retry_delay)
+                        continue
+                        
+                    # 提前5分钟刷新token
+                    token_cache.set_token(token, expires_in - 300)
+                    return token
+                except requests.exceptions.JSONDecodeError:
+                    logging.error("Error decoding token response JSON")
+            else:
+                logging.error(f"Failed to get token: {response.status_code}, Response: {response.text}")
+            
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+                
+        except (requests.exceptions.RequestException, ValueError) as e:
+            logging.error(f"Error during token retrieval: {str(e)}")
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+
+    return None
 
 def get_auth_header():
     """Retrieve the authorization header with the token."""
@@ -146,18 +151,9 @@ def get_auth_header():
     return f"Bearer {token}"
 
 def get_tag_id(tag_name, headers):
-    """Retrieve the ID of a tag based on its name with caching."""
-    # Try to get from cache first
-    tag_id = tag_cache.get_tag_id(tag_name)
-    if tag_id is not None:
-        logging.debug(f"Using cached tag ID for '{tag_name}'")
-        return tag_id
-
-    # If not in cache, search for the tag
+    """Retrieve the ID of a tag based on its name."""
     url = f"https://{HOST}/api/v1/tags"
-    session = create_session()
-    response = session.get(url, headers=headers, timeout=30)
-    
+    response = requests.get(url, headers=headers)
     if response.status_code != 200:
         logging.error(f"Failed to fetch tags: {response.status_code}, Response: {response.text}")
         return None
@@ -168,8 +164,6 @@ def get_tag_id(tag_name, headers):
         if tag_id:
             logging.info(f"Found existing tag: '{tag_name}' with ID: {tag_id}")
             stats.existing_tags.add(tag_name)
-            # Cache the tag ID
-            tag_cache.add_tag(tag_name, tag_id)
         else:
             logging.info(f"Tag '{tag_name}' not found in API response.")
         return tag_id
@@ -180,10 +174,8 @@ def get_tag_id(tag_name, headers):
 def create_tag(tag_name, headers):
     """Create a new tag if it does not exist."""
     url = f"https://{HOST}/api/v1/tags"
-    session = create_session()
     data = {"name": tag_name}
-    response = session.post(url, headers=headers, json=data, timeout=30)
-    
+    response = requests.post(url, headers=headers, json=data)
     if response.status_code != 201:
         logging.error(f"Failed to create tag '{tag_name}': {response.status_code}, Response: {response.text}")
         return None
@@ -204,8 +196,6 @@ def create_tag(tag_name, headers):
 
     logging.info(f"Successfully created new tag '{tag_name}' with ID: {tag_id}")
     stats.created_tags.add(tag_name)
-    # Cache the newly created tag ID
-    tag_cache.add_tag(tag_name, tag_id)
     return tag_id
 
 def check_memory_usage():
@@ -219,54 +209,51 @@ def check_memory_usage():
     return False
 
 def refresh_token_if_needed(headers):
-    """Check and refresh token if expired"""
-    if not token_cache.is_valid():
-        new_token = get_token()
-        if new_token:
-            headers["Authorization"] = f"Bearer {new_token}"
-            logging.info("Token refreshed successfully")
+    """Check and refresh token if expired or about to expire"""
+    max_retries = 3
+    retry_delay = 2  # seconds
+    
+    for attempt in range(max_retries):
+        try:
+            if not token_cache.is_valid():
+                new_token = get_token()
+                if new_token:
+                    headers["Authorization"] = f"Bearer {new_token}"
+                    logging.info("Token refreshed successfully")
+                    return True
+                else:
+                    if attempt < max_retries - 1:
+                        logging.warning(f"Token refresh attempt {attempt + 1} failed, retrying...")
+                        time.sleep(retry_delay)
+                        continue
+                    else:
+                        logging.error("Failed to refresh token after all attempts")
+                        return False
             return True
-        else:
-            logging.error("Failed to refresh token")
+        except Exception as e:
+            logging.error(f"Error during token refresh: {str(e)}")
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+                continue
             return False
-    return True
-
-def batch_search_devices(values, field, headers):
-    """Search for multiple devices in a single API call"""
-    filters = [{"field": field, "operand": value, "operator": "="} for value in values]
-    data = {
-        "filter": {
-            "operator": "or",
-            "rules": filters
-        }
-    }
     
-    session = create_session()
-    url_search = f"https://{HOST}/api/v1/devices/search"
-    response = session.post(url_search, headers=headers, json=data, timeout=30)
-    
-    if response.status_code != 200:
-        logging.error(f"Batch device search failed: {response.status_code}, Response: {response.text}")
-        return None
-    
-    try:
-        return response.json()
-    except requests.exceptions.JSONDecodeError:
-        logging.error("Error decoding batch device search response JSON")
-        return None
+    return False
 
 def batch_search_and_tag_devices(values, field, tag_id, headers, cells):
     """Batch search and tag devices based on field and values."""
     session = create_session()
+    url_search = f"https://{HOST}/api/v1/devices/search"
     
+    success = True
     # Track success/failure for each device
     success_values = []
     failed_values = []
     success_cells = []
     failed_cells = []
     
-    # Check memory usage
+    # Check memory usage and adjust batch size if needed
     if check_memory_usage():
+        stats.current_batch_size = max(stats.current_batch_size // 2, 10)
         time.sleep(5)  # Allow system time for memory cleanup
     
     # Refresh token if needed
@@ -274,39 +261,38 @@ def batch_search_and_tag_devices(values, field, tag_id, headers, cells):
         logging.error("Token refresh failed, marking batch as failed")
         for cell in cells:
             cell.fill = PatternFill(start_color="FFFF00", fill_type="solid")
+        stats.adjust_batch_size(False)
         return False
     
-    # Process devices in smaller batches for search
+    # Search devices in batch
     all_device_ids = []
-    for i in range(0, len(values), DEVICE_SEARCH_BATCH):
-        batch_values = values[i:i + DEVICE_SEARCH_BATCH]
-        batch_cells = cells[i:i + DEVICE_SEARCH_BATCH]
-        
-        devices = batch_search_devices(batch_values, field, headers)
-        if not devices:
-            for cell in batch_cells:
-                cell.fill = PatternFill(start_color="FFFF00", fill_type="solid")
-            continue
-
-        # Map devices to their search values
-        device_map = {}
-        for device in devices:
-            device_value = device.get(field)
-            if device_value in batch_values:
-                if device_value not in device_map:
-                    device_map[device_value] = []
-                device_map[device_value].append(device['id'])
-
-        # Process results
-        for value, cell in zip(batch_values, batch_cells):
-            if value in device_map:
-                all_device_ids.extend(device_map[value])
-                success_values.append(value)
-                success_cells.append(cell)
+    for value, cell in zip(values, cells):
+        try:
+            data = {"filter": {"field": field, "operand": value, "operator": "="}}
+            response = session.post(url_search, headers=headers, json=data, timeout=30)
+            
+            if response.status_code == 200:
+                try:
+                    devices = response.json()
+                    if devices:
+                        all_device_ids.extend([device['id'] for device in devices])
+                        success_values.append(value)
+                        success_cells.append(cell)
+                    else:
+                        failed_values.append(value)
+                        failed_cells.append(cell)
+                except requests.exceptions.JSONDecodeError:
+                    logging.error(f"Error decoding device search response JSON for {field} {value}")
+                    failed_values.append(value)
+                    failed_cells.append(cell)
             else:
                 failed_values.append(value)
                 failed_cells.append(cell)
-
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            logging.error(f"Request failed for {field} {value}: {str(e)}")
+            failed_values.append(value)
+            failed_cells.append(cell)
+    
     # Mark failed cells
     for cell in failed_cells:
         cell.fill = PatternFill(start_color="FFFF00", fill_type="solid")
@@ -332,16 +318,19 @@ def batch_search_and_tag_devices(values, field, tag_id, headers, cells):
                     stats.successful_name_tags.add(value)
                 else:
                     stats.successful_ip_tags.add(value)
+            stats.adjust_batch_size(True)
             return True
         
         # If tag assignment fails, mark all cells as failed
         for cell in cells:
             cell.fill = PatternFill(start_color="FFFF00", fill_type="solid")
+        stats.adjust_batch_size(False)
         return False
     except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
         logging.error(f"Tag assignment request failed: {str(e)}")
         for cell in cells:
             cell.fill = PatternFill(start_color="FFFF00", fill_type="solid")
+        stats.adjust_batch_size(False)
         return False
 
 def process_excel_sheet(sheet, headers):
@@ -384,7 +373,7 @@ def process_excel_sheet(sheet, headers):
 
                 # Process name column
                 if name_col is not None and row[name_col - 1].value:
-                    if len(current_batch) >= BATCH_SIZE:
+                    if len(current_batch) >= stats.current_batch_size:
                         futures.append(executor.submit(process_batch, current_batch.copy(), current_field, current_cells.copy(), tag_id))
                         current_batch = []
                         current_cells = []
@@ -394,7 +383,7 @@ def process_excel_sheet(sheet, headers):
 
                 # Process ipaddr column
                 if ipaddr_col is not None and row[ipaddr_col - 1].value:
-                    if len(current_batch) >= BATCH_SIZE:
+                    if len(current_batch) >= stats.current_batch_size:
                         futures.append(executor.submit(process_batch, current_batch.copy(), current_field, current_cells.copy(), tag_id))
                         current_batch = []
                         current_cells = []
