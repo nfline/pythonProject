@@ -30,9 +30,9 @@ else:
     ssl._create_default_https_context = _create_unverified_https_context
 
 # Setup and API credentials
-HOST = (".api.cloud.extrahop.com")
-ID = ""
-SECRET = ""
+HOST = ("aaa.api.cloud.extrahop.com")
+ID = "aaa"
+SECRET = "aaa"
 EXCEL_FILE = "device.xlsx"
 MAX_WORKERS = 20  # Increased maximum concurrent workers
 INITIAL_BATCH_SIZE = 200  # Increased initial batch size
@@ -110,7 +110,12 @@ class ConnectionPool:
         )
         session.mount("https://", adapter)
         session.mount("http://", adapter)
-        session.verify = False
+        session.verify = False  # Disable SSL verification for all requests
+        session.headers.update({
+            'Connection': 'keep-alive',
+            'Accept-Encoding': 'gzip, deflate',
+            'Accept': '*/*'
+        })
         return session
 
     def get_session(self) -> requests.Session:
@@ -198,7 +203,31 @@ def get_token():
             }
             url = f"https://{HOST}/oauth2/token"
             session = requests.Session()
-            response = session.post(url, headers=headers, data="grant_type=client_credentials", timeout=30)
+            
+            # Configure SSL verification settings
+            session.verify = False  # Disable SSL verification
+            adapter = HTTPAdapter(
+                max_retries=Retry(
+                    total=5,
+                    backoff_factor=0.5,
+                    status_forcelist=[500, 502, 503, 504]
+                )
+            )
+            session.mount('https://', adapter)
+            
+            try:
+                response = session.post(url, headers=headers, data="grant_type=client_credentials", timeout=30)
+                response.raise_for_status()  # Raise exception for bad status codes
+            except requests.exceptions.SSLError as ssl_err:
+                logging.error(f"SSL Error during token retrieval: {ssl_err}")
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                continue
+            except requests.exceptions.RequestException as req_err:
+                logging.error(f"Request Error during token retrieval: {req_err}")
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                continue
             
             if response.status_code == 200:
                 try:
@@ -222,8 +251,8 @@ def get_token():
             if attempt < max_retries - 1:
                 time.sleep(retry_delay)
                 
-        except (requests.exceptions.RequestException, ValueError) as e:
-            logging.error(f"Error during token retrieval: {str(e)}")
+        except Exception as e:
+            logging.error(f"Unexpected error during token retrieval: {str(e)}")
             if attempt < max_retries - 1:
                 time.sleep(retry_delay)
 
