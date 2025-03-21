@@ -13,10 +13,6 @@ import urllib3
 import psutil
 import warnings
 import ssl
-from typing import List, Dict, Any, Set, Optional
-from dataclasses import dataclass
-from queue import Queue
-import threading
 
 # Suppress SSL warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -30,13 +26,11 @@ else:
     ssl._create_default_https_context = _create_unverified_https_context
 
 # Setup and API credentials
-HOST = ("aaa.api.cloud.extrahop.com")
-ID = "aaa"
-SECRET = "aaa"
+HOST = (".api.cloud.extrahop.com")
+ID = ""
+SECRET = ""
 EXCEL_FILE = "device.xlsx"
-MAX_WORKERS = 20  # Increased maximum concurrent workers
-INITIAL_BATCH_SIZE = 200  # Increased initial batch size
-CONNECTION_POOL_SIZE = 100  # Connection pool size
+MAX_WORKERS = 10  # Maximum concurrent workers
 
 # Token caching
 class TokenCache:
@@ -80,111 +74,19 @@ class TaggingStats:
 
 stats = TaggingStats()
 
-# Connection Pool Manager
-class ConnectionPool:
-    _instance = None
-    _lock = threading.Lock()
-
-    def __new__(cls):
-        with cls._lock:
-            if cls._instance is None:
-                cls._instance = super().__new__(cls)
-                cls._instance.initialize()
-            return cls._instance
-
-    def initialize(self):
-        self.session = self._create_session()
-        self.last_used = datetime.now()
-
-    def _create_session(self) -> requests.Session:
-        session = requests.Session()
-        retry_strategy = Retry(
-            total=5,
-            backoff_factor=1,
-            status_forcelist=[429, 500, 502, 503, 504],
-        )
-        adapter = HTTPAdapter(
-            max_retries=retry_strategy,
-            pool_connections=CONNECTION_POOL_SIZE,
-            pool_maxsize=CONNECTION_POOL_SIZE
-        )
-        session.mount("https://", adapter)
-        session.mount("http://", adapter)
-        session.verify = False  # Disable SSL verification for all requests
-        session.headers.update({
-            'Connection': 'keep-alive',
-            'Accept-Encoding': 'gzip, deflate',
-            'Accept': '*/*'
-        })
-        return session
-
-    def get_session(self) -> requests.Session:
-        current_time = datetime.now()
-        if (current_time - self.last_used).total_seconds() > 300:  # 5 minutes
-            self.session = self._create_session()
-        self.last_used = current_time
-        return self.session
-
-@dataclass
-class BatchProcessingMetrics:
-    total_processed: int = 0
-    successful: int = 0
-    failed: int = 0
-    start_time: Optional[datetime] = None
-    
-    def calculate_success_rate(self) -> float:
-        return self.successful / self.total_processed if self.total_processed > 0 else 0
-
-class BatchSizeManager:
-    def __init__(self, initial_size=INITIAL_BATCH_SIZE, min_size=50, max_size=500):
-        self.current_size = initial_size
-        self.min_size = min_size
-        self.max_size = max_size
-        self.metrics = BatchProcessingMetrics()
-        self.adjustment_threshold = 0.8  # 80% success rate threshold
-
-    def adjust_batch_size(self, success_rate: float):
-        if success_rate > self.adjustment_threshold:
-            self.increase_batch_size()
-        elif success_rate < (self.adjustment_threshold - 0.2):  # If below 60%
-            self.decrease_batch_size()
-
-    def increase_batch_size(self):
-        new_size = min(int(self.current_size * 1.2), self.max_size)
-        if new_size != self.current_size:
-            self.current_size = new_size
-            logging.info(f"Increased batch size to {self.current_size}")
-
-    def decrease_batch_size(self):
-        new_size = max(int(self.current_size * 0.8), self.min_size)
-        if new_size != self.current_size:
-            self.current_size = new_size
-            logging.info(f"Decreased batch size to {self.current_size}")
-
-class DeviceBatch:
-    def __init__(self, size: int):
-        self.values: List[str] = []
-        self.cells: List[Any] = []
-        self.field: Optional[str] = None
-        self.size = size
-
-    def is_full(self) -> bool:
-        return len(self.values) >= self.size
-
-    def add_device(self, value: str, cell: Any, field: str):
-        if not self.field:
-            self.field = field
-        elif self.field != field:
-            return False
-        
-        self.values.append(value)
-        self.cells.append(cell)
-        return True
-
-    def clear(self):
-        self.values.clear()
-        self.cells.clear()
-        self.field = None
+def create_session():
+    """Create a requests session with retry strategy"""
+    session = requests.Session()
+    retry_strategy = Retry(
+        total=5,  # Increase retry attempts
+        backoff_factor=1,
+        status_forcelist=[429, 500, 502, 503, 504],
+    )
+    adapter = HTTPAdapter(max_retries=retry_strategy)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    session.verify = False  # Disable SSL verification
+    return session
 
 def get_token():
     """Generate and retrieve a temporary API access token with caching and retry logic."""
@@ -202,32 +104,8 @@ def get_token():
                 "Content-Type": "application/x-www-form-urlencoded"
             }
             url = f"https://{HOST}/oauth2/token"
-            session = requests.Session()
-            
-            # Configure SSL verification settings
-            session.verify = False  # Disable SSL verification
-            adapter = HTTPAdapter(
-                max_retries=Retry(
-                    total=5,
-                    backoff_factor=0.5,
-                    status_forcelist=[500, 502, 503, 504]
-                )
-            )
-            session.mount('https://', adapter)
-            
-            try:
-                response = session.post(url, headers=headers, data="grant_type=client_credentials", timeout=30)
-                response.raise_for_status()  # Raise exception for bad status codes
-            except requests.exceptions.SSLError as ssl_err:
-                logging.error(f"SSL Error during token retrieval: {ssl_err}")
-                if attempt < max_retries - 1:
-                    time.sleep(retry_delay)
-                continue
-            except requests.exceptions.RequestException as req_err:
-                logging.error(f"Request Error during token retrieval: {req_err}")
-                if attempt < max_retries - 1:
-                    time.sleep(retry_delay)
-                continue
+            session = create_session()
+            response = session.post(url, headers=headers, data="grant_type=client_credentials", timeout=30)
             
             if response.status_code == 200:
                 try:
@@ -240,7 +118,7 @@ def get_token():
                         time.sleep(retry_delay)
                         continue
                         
-                    # Refresh token 5 minutes before expiration
+                    # 提前5分钟刷新token
                     token_cache.set_token(token, expires_in - 300)
                     return token
                 except requests.exceptions.JSONDecodeError:
@@ -251,8 +129,8 @@ def get_token():
             if attempt < max_retries - 1:
                 time.sleep(retry_delay)
                 
-        except Exception as e:
-            logging.error(f"Unexpected error during token retrieval: {str(e)}")
+        except (requests.exceptions.RequestException, ValueError) as e:
+            logging.error(f"Error during token retrieval: {str(e)}")
             if attempt < max_retries - 1:
                 time.sleep(retry_delay)
 
@@ -268,7 +146,7 @@ def get_auth_header():
 
 def get_tag_id(tag_name, headers):
     """Retrieve the ID of a tag based on its name."""
-    session = requests.Session()
+    session = create_session()
     url = f"https://{HOST}/api/v1/tags"
     response = session.get(url, headers=headers)
     if response.status_code != 200:
@@ -290,7 +168,7 @@ def get_tag_id(tag_name, headers):
 
 def create_tag(tag_name, headers):
     """Create a new tag if it does not exist."""
-    session = requests.Session()
+    session = create_session()
     url = f"https://{HOST}/api/v1/tags"
     data = {"name": tag_name}
     response = session.post(url, headers=headers, json=data)
@@ -357,131 +235,67 @@ def refresh_token_if_needed(headers):
     
     return False
 
-def process_excel_sheet(sheet, headers):
-    """Enhanced process_excel_sheet with improved batch processing and memory management"""
-    name_col, ipaddr_col, tag_col = None, None, None
-    for cell in sheet[1]:
-        if cell.value and cell.value.lower() == 'name':
-            name_col = cell.column
-        elif cell.value and cell.value.lower() == 'ipaddr':
-            ipaddr_col = cell.column
-        elif cell.value and cell.value.lower() == 'tag':
-            tag_col = cell.column
-
-    batch_manager = BatchSizeManager()
-    connection_pool = ConnectionPool()
-    
-    def process_batch(batch: DeviceBatch, tag_id: str) -> bool:
-        try:
-            session = connection_pool.get_session()
-            success = batch_search_and_tag_devices(
-                batch.values, batch.field, tag_id, headers, 
-                batch.cells, session, batch_manager.metrics
-            )
-            success_rate = batch_manager.metrics.calculate_success_rate()
-            batch_manager.adjust_batch_size(success_rate)
-            return success
-        except Exception as e:
-            logging.error(f"Batch processing error: {str(e)}")
-            return False
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        futures = []
-        current_batch = DeviceBatch(batch_manager.current_size)
-        previous_tag = None
-        
-        for row in sheet.iter_rows(min_row=2):
-            if check_memory_usage():
-                time.sleep(1)  # Brief pause for memory cleanup
-                
-            tag_name = row[tag_col - 1].value if tag_col is not None else None
-            
-            if not tag_name and previous_tag:
-                tag_name = previous_tag
-                row[tag_col - 1].value = tag_name
-            
-            if tag_name:
-                previous_tag = tag_name
-                tag_id = get_tag_id(tag_name, headers) or create_tag(tag_name, headers)
-                
-                if not tag_id:
-                    continue
-
-                # Process name and IP columns
-                for col, field in [(name_col, 'name'), (ipaddr_col, 'ipaddr')]:
-                    if col is not None and row[col - 1].value:
-                        if current_batch.is_full() or (current_batch.field and current_batch.field != field):
-                            if current_batch.values:
-                                futures.append(
-                                    executor.submit(process_batch, current_batch, tag_id)
-                                )
-                            current_batch = DeviceBatch(batch_manager.current_size)
-                        
-                        current_batch.add_device(row[col - 1].value, row[col - 1], field)
-
-        # Process final batch
-        if current_batch.values:
-            futures.append(executor.submit(process_batch, current_batch, tag_id))
-
-        # Wait for all tasks to complete
-        concurrent.futures.wait(futures)
-
-def batch_search_and_tag_devices(values: List[str], field: str, tag_id: str, 
-                               headers: Dict[str, str], cells: List[Any], 
-                               session: requests.Session,
-                               metrics: BatchProcessingMetrics) -> bool:
-    """Optimized batch processing with connection pooling and metrics tracking"""
+def batch_search_and_tag_devices(values, field, tag_id, headers, cells):
+    """Batch search and tag devices based on field and values."""
+    session = create_session()
     url_search = f"https://{HOST}/api/v1/devices/search"
+    
+    # Track success/failure for each device
     success_values = []
     failed_values = []
-    all_device_ids = []
-
-    # Update metrics
-    metrics.total_processed += len(values)
+    success_cells = []
+    failed_cells = []
     
-    # Batch device search
+    # Check memory usage
+    if check_memory_usage():
+        time.sleep(5)  # Allow system time for memory cleanup
+    
+    # Refresh token if needed
+    if not refresh_token_if_needed(headers):
+        logging.error("Token refresh failed, marking batch as failed")
+        for cell in cells:
+            cell.fill = PatternFill(start_color="FFFF00", fill_type="solid")
+        return False
+    
+    # Search devices in batch
+    all_device_ids = []
     for value, cell in zip(values, cells):
         try:
             data = {"filter": {"field": field, "operand": value, "operator": "="}}
             response = session.post(url_search, headers=headers, json=data, timeout=30)
             
             if response.status_code == 200:
-                devices = response.json()
-                if devices:
-                    all_device_ids.extend([device['id'] for device in devices])
-                    success_values.append(value)
-                    metrics.successful += 1
-                else:
-                    failed_values.append(value)
-                    cell.fill = PatternFill(start_color="FFFF00", fill_type="solid")
-                    metrics.failed += 1
-                    # Update failed statistics
-                    if field == 'name':
-                        stats.failed_name_tags.add(value)
+                try:
+                    devices = response.json()
+                    if devices:
+                        all_device_ids.extend([device['id'] for device in devices])
+                        success_values.append(value)
+                        success_cells.append(cell)
                     else:
-                        stats.failed_ip_tags.add(value)
+                        failed_values.append(value)
+                        failed_cells.append(cell)
+                except requests.exceptions.JSONDecodeError:
+                    logging.error(f"Error decoding device search response JSON for {field} {value}")
+                    failed_values.append(value)
+                    failed_cells.append(cell)
             else:
                 failed_values.append(value)
-                cell.fill = PatternFill(start_color="FFFF00", fill_type="solid")
-                metrics.failed += 1
-                # Update failed statistics
-                if field == 'name':
-                    stats.failed_name_tags.add(value)
-                else:
-                    stats.failed_ip_tags.add(value)
-                
-        except Exception as e:
-            logging.error(f"Search request failed for {field} {value}: {str(e)}")
+                failed_cells.append(cell)
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            logging.error(f"Request failed for {field} {value}: {str(e)}")
             failed_values.append(value)
-            cell.fill = PatternFill(start_color="FFFF00", fill_type="solid")
-            metrics.failed += 1
-            # Update failed statistics
-            if field == 'name':
-                stats.failed_name_tags.add(value)
-            else:
-                stats.failed_ip_tags.add(value)
-
+            failed_cells.append(cell)
+    
+    # Mark failed cells
+    for cell in failed_cells:
+        cell.fill = PatternFill(start_color="FFFF00", fill_type="solid")
+    
     if not all_device_ids:
+        return False
+
+    # Refresh token before tag assignment
+    if not refresh_token_if_needed(headers):
+        logging.error("Token refresh failed before tag assignment")
         return False
 
     # Assign tags in batch
@@ -491,35 +305,126 @@ def batch_search_and_tag_devices(values: List[str], field: str, tag_id: str,
         response_assign = session.post(url_assign, headers=headers, json=data_assign, timeout=30)
         
         if response_assign.status_code == 204:
-            # Update success statistics
+            # Only mark successful values
             for value in success_values:
                 if field == 'name':
                     stats.successful_name_tags.add(value)
                 else:
                     stats.successful_ip_tags.add(value)
             return True
-        else:
-            # Mark all values as failed if tag assignment fails
-            for value in success_values:
-                if field == 'name':
-                    stats.failed_name_tags.add(value)
-                else:
-                    stats.failed_ip_tags.add(value)
-            for cell in cells:
-                cell.fill = PatternFill(start_color="FFFF00", fill_type="solid")
-            return False
-            
-    except Exception as e:
-        logging.error(f"Tag assignment request failed: {str(e)}")
-        # Mark all values as failed if exception occurs
-        for value in success_values:
-            if field == 'name':
-                stats.failed_name_tags.add(value)
-            else:
-                stats.failed_ip_tags.add(value)
+        
+        # If tag assignment fails, mark all cells as failed
         for cell in cells:
             cell.fill = PatternFill(start_color="FFFF00", fill_type="solid")
         return False
+    except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+        logging.error(f"Tag assignment request failed: {str(e)}")
+        for cell in cells:
+            cell.fill = PatternFill(start_color="FFFF00", fill_type="solid")
+        return False
+
+class BatchSizeManager:
+    def __init__(self, initial_size=100, min_size=10, max_size=200):
+        self.current_size = initial_size
+        self.min_size = min_size
+        self.max_size = max_size
+        self.success_count = 0
+        self.failure_count = 0
+
+    def adjust_batch_size(self, success):
+        if success:
+            self.success_count += 1
+            self.failure_count = 0
+            if self.success_count >= 3:
+                self.increase_batch_size()
+        else:
+            self.failure_count += 1
+            self.success_count = 0
+            if self.failure_count >= 2:
+                self.decrease_batch_size()
+
+    def increase_batch_size(self):
+        new_size = min(self.current_size * 1.5, self.max_size)
+        if new_size != self.current_size:
+            self.current_size = int(new_size)
+            logging.info(f"Increased batch size to {self.current_size}")
+
+    def decrease_batch_size(self):
+        new_size = max(self.current_size * 0.5, self.min_size)
+        if new_size != self.current_size:
+            self.current_size = int(new_size)
+            logging.info(f"Decreased batch size to {self.current_size}")
+
+    def get_size(self):
+        return self.current_size
+
+def process_excel_sheet(sheet, headers):
+    """Process each row for both name and ipaddr columns with batch processing."""
+    name_col, ipaddr_col, tag_col = None, None, None
+    for cell in sheet[1]:
+        if cell.value and cell.value.lower() == 'name':
+            name_col = cell.column
+        elif cell.value and cell.value.lower() == 'ipaddr':
+            ipaddr_col = cell.column
+        elif cell.value and cell.value.lower() == 'tag':
+            tag_col = cell.column
+
+    previous_tag = None
+    semaphore = Semaphore(MAX_WORKERS)
+    batch_manager = BatchSizeManager()
+    
+    def process_batch(values, field, cells, tag_id):
+        with semaphore:
+            success = batch_search_and_tag_devices(values, field, tag_id, headers, cells)
+            batch_manager.adjust_batch_size(success)
+            return success
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        futures = []
+        current_batch = []
+        current_cells = []
+        current_field = None
+        
+        for row in sheet.iter_rows(min_row=2):
+            tag_name = row[tag_col - 1].value if tag_col is not None else None
+            
+            if not tag_name and previous_tag:
+                tag_name = previous_tag
+                row[tag_col - 1].value = tag_name
+            
+            if tag_name:
+                previous_tag = tag_name
+                tag_id = get_tag_id(tag_name, headers) or create_tag(tag_name, headers)
+                if not tag_id:
+                    logging.error(f"Skipping row, unable to retrieve or create tag: {tag_name}")
+                    continue
+
+                # Process name column
+                if name_col is not None and row[name_col - 1].value:
+                    if len(current_batch) >= batch_manager.get_size():
+                        futures.append(executor.submit(process_batch, current_batch.copy(), current_field, current_cells.copy(), tag_id))
+                        current_batch = []
+                        current_cells = []
+                    current_batch.append(row[name_col - 1].value)
+                    current_cells.append(row[name_col - 1])
+                    current_field = 'name'
+
+                # Process ipaddr column
+                if ipaddr_col is not None and row[ipaddr_col - 1].value:
+                    if len(current_batch) >= batch_manager.get_size():
+                        futures.append(executor.submit(process_batch, current_batch.copy(), current_field, current_cells.copy(), tag_id))
+                        current_batch = []
+                        current_cells = []
+                    current_batch.append(row[ipaddr_col - 1].value)
+                    current_cells.append(row[ipaddr_col - 1])
+                    current_field = 'ipaddr'
+
+        # Process the last batch
+        if current_batch:
+            futures.append(executor.submit(process_batch, current_batch, current_field, current_cells, tag_id))
+
+        # Wait for all tasks to complete
+        concurrent.futures.wait(futures)
 
 def print_summary():
     """Print a summary of all tagging operations."""
@@ -527,40 +432,21 @@ def print_summary():
     logging.info("\n=== Tagging Operation Summary ===")
     logging.info(f"Total processing time: {duration}")
     logging.info(f"Created new tags: {len(stats.created_tags)}")
-    if stats.created_tags:
-        logging.info("Created tags:")
-        for tag in stats.created_tags:
-            logging.info(f"  - {tag}")
-            
     logging.info(f"Used existing tags: {len(stats.existing_tags)}")
-    if stats.existing_tags:
-        logging.info("Existing tags:")
-        for tag in stats.existing_tags:
-            logging.info(f"  - {tag}")
-            
     logging.info(f"Successfully tagged by name: {len(stats.successful_name_tags)}")
-    if stats.successful_name_tags:
-        logging.info("Successfully tagged names:")
-        for name in stats.successful_name_tags:
-            logging.info(f"  - {name}")
-            
     logging.info(f"Failed to tag by name: {len(stats.failed_name_tags)}")
-    if stats.failed_name_tags:
-        logging.info("Failed name tags:")
-        for name in stats.failed_name_tags:
-            logging.info(f"  - {name}")
-    
     logging.info(f"Successfully tagged by IP: {len(stats.successful_ip_tags)}")
-    if stats.successful_ip_tags:
-        logging.info("Successfully tagged IPs:")
-        for ip in stats.successful_ip_tags:
-            logging.info(f"  - {ip}")
-            
     logging.info(f"Failed to tag by IP: {len(stats.failed_ip_tags)}")
+    
+    if stats.failed_name_tags:
+        logging.info("\nFailed name tags:")
+        for name in stats.failed_name_tags:
+            logging.info(f"- {name}")
+    
     if stats.failed_ip_tags:
-        logging.info("Failed IP tags:")
+        logging.info("\nFailed IP tags:")
         for ip in stats.failed_ip_tags:
-            logging.info(f"  - {ip}")
+            logging.info(f"- {ip}")
 
 def main():
     log_filename = setup_logging()
