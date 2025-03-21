@@ -16,13 +16,13 @@ import warnings
 # Suppress SSL warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+
 # Setup and API credentials
 HOST = ("[subdomain].api.cloud.extrahop.com")
 ID = "paste api key here"
 SECRET = "paste api key here"
 EXCEL_FILE = "device.xlsx"
 MAX_WORKERS = 10  # Maximum concurrent workers
-BATCH_SIZE = 100  # Batch processing size
 
 # Token caching
 class TokenCache:
@@ -63,20 +63,6 @@ class TaggingStats:
         self.existing_tags = set()
         self.processed_count = 0
         self.start_time = None
-        self.consecutive_failures = 0
-        self.current_batch_size = BATCH_SIZE
-
-    def adjust_batch_size(self, success):
-        """Dynamically adjust batch size based on success/failure"""
-        if success:
-            self.consecutive_failures = 0
-            if self.current_batch_size < BATCH_SIZE:
-                self.current_batch_size = min(self.current_batch_size * 2, BATCH_SIZE)
-        else:
-            self.consecutive_failures += 1
-            if self.consecutive_failures >= 2:
-                self.current_batch_size = max(self.current_batch_size // 2, 10)
-                self.consecutive_failures = 0
 
 stats = TaggingStats()
 
@@ -227,7 +213,7 @@ def refresh_token_if_needed(headers):
                         time.sleep(retry_delay)
                         continue
                     else:
-                        logging.error("Failed to refresh token after all attempts")
+                        logging.error("All token refresh attempts failed")
                         return False
             return True
         except Exception as e:
@@ -244,16 +230,14 @@ def batch_search_and_tag_devices(values, field, tag_id, headers, cells):
     session = create_session()
     url_search = f"https://{HOST}/api/v1/devices/search"
     
-    success = True
     # Track success/failure for each device
     success_values = []
     failed_values = []
     success_cells = []
     failed_cells = []
     
-    # Check memory usage and adjust batch size if needed
+    # Check memory usage
     if check_memory_usage():
-        stats.current_batch_size = max(stats.current_batch_size // 2, 10)
         time.sleep(5)  # Allow system time for memory cleanup
     
     # Refresh token if needed
@@ -261,7 +245,6 @@ def batch_search_and_tag_devices(values, field, tag_id, headers, cells):
         logging.error("Token refresh failed, marking batch as failed")
         for cell in cells:
             cell.fill = PatternFill(start_color="FFFF00", fill_type="solid")
-        stats.adjust_batch_size(False)
         return False
     
     # Search devices in batch
@@ -318,20 +301,52 @@ def batch_search_and_tag_devices(values, field, tag_id, headers, cells):
                     stats.successful_name_tags.add(value)
                 else:
                     stats.successful_ip_tags.add(value)
-            stats.adjust_batch_size(True)
             return True
         
         # If tag assignment fails, mark all cells as failed
         for cell in cells:
             cell.fill = PatternFill(start_color="FFFF00", fill_type="solid")
-        stats.adjust_batch_size(False)
         return False
     except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
         logging.error(f"Tag assignment request failed: {str(e)}")
         for cell in cells:
             cell.fill = PatternFill(start_color="FFFF00", fill_type="solid")
-        stats.adjust_batch_size(False)
         return False
+
+class BatchSizeManager:
+    def __init__(self, initial_size=100, min_size=10, max_size=200):
+        self.current_size = initial_size
+        self.min_size = min_size
+        self.max_size = max_size
+        self.success_count = 0
+        self.failure_count = 0
+
+    def adjust_batch_size(self, success):
+        if success:
+            self.success_count += 1
+            self.failure_count = 0
+            if self.success_count >= 3:
+                self.increase_batch_size()
+        else:
+            self.failure_count += 1
+            self.success_count = 0
+            if self.failure_count >= 2:
+                self.decrease_batch_size()
+
+    def increase_batch_size(self):
+        new_size = min(self.current_size * 1.5, self.max_size)
+        if new_size != self.current_size:
+            self.current_size = int(new_size)
+            logging.info(f"Increased batch size to {self.current_size}")
+
+    def decrease_batch_size(self):
+        new_size = max(self.current_size * 0.5, self.min_size)
+        if new_size != self.current_size:
+            self.current_size = int(new_size)
+            logging.info(f"Decreased batch size to {self.current_size}")
+
+    def get_size(self):
+        return self.current_size
 
 def process_excel_sheet(sheet, headers):
     """Process each row for both name and ipaddr columns with batch processing."""
@@ -346,10 +361,13 @@ def process_excel_sheet(sheet, headers):
 
     previous_tag = None
     semaphore = Semaphore(MAX_WORKERS)
+    batch_manager = BatchSizeManager()
     
     def process_batch(values, field, cells, tag_id):
         with semaphore:
-            return batch_search_and_tag_devices(values, field, tag_id, headers, cells)
+            success = batch_search_and_tag_devices(values, field, tag_id, headers, cells)
+            batch_manager.adjust_batch_size(success)
+            return success
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         futures = []
@@ -373,7 +391,7 @@ def process_excel_sheet(sheet, headers):
 
                 # Process name column
                 if name_col is not None and row[name_col - 1].value:
-                    if len(current_batch) >= stats.current_batch_size:
+                    if len(current_batch) >= batch_manager.get_size():
                         futures.append(executor.submit(process_batch, current_batch.copy(), current_field, current_cells.copy(), tag_id))
                         current_batch = []
                         current_cells = []
@@ -383,7 +401,7 @@ def process_excel_sheet(sheet, headers):
 
                 # Process ipaddr column
                 if ipaddr_col is not None and row[ipaddr_col - 1].value:
-                    if len(current_batch) >= stats.current_batch_size:
+                    if len(current_batch) >= batch_manager.get_size():
                         futures.append(executor.submit(process_batch, current_batch.copy(), current_field, current_cells.copy(), tag_id))
                         current_batch = []
                         current_cells = []
