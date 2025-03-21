@@ -12,15 +12,23 @@ from threading import Semaphore
 import urllib3
 import psutil
 import warnings
+import ssl
 
 # Suppress SSL warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+requests.packages.urllib3.disable_warnings()
 
+try:
+    _create_unverified_https_context = ssl._create_unverified_context
+except AttributeError:
+    pass
+else:
+    ssl._create_default_https_context = _create_unverified_https_context
 
 # Setup and API credentials
-HOST = ("[subdomain].api.cloud.extrahop.com")
-ID = "paste api key here"
-SECRET = "paste api key here"
+HOST = (".api.cloud.extrahop.com")
+ID = ""
+SECRET = ""
 EXCEL_FILE = "device.xlsx"
 MAX_WORKERS = 10  # Maximum concurrent workers
 
@@ -138,8 +146,9 @@ def get_auth_header():
 
 def get_tag_id(tag_name, headers):
     """Retrieve the ID of a tag based on its name."""
+    session = create_session()
     url = f"https://{HOST}/api/v1/tags"
-    response = requests.get(url, headers=headers)
+    response = session.get(url, headers=headers)
     if response.status_code != 200:
         logging.error(f"Failed to fetch tags: {response.status_code}, Response: {response.text}")
         return None
@@ -159,9 +168,10 @@ def get_tag_id(tag_name, headers):
 
 def create_tag(tag_name, headers):
     """Create a new tag if it does not exist."""
+    session = create_session()
     url = f"https://{HOST}/api/v1/tags"
     data = {"name": tag_name}
-    response = requests.post(url, headers=headers, json=data)
+    response = session.post(url, headers=headers, json=data)
     if response.status_code != 201:
         logging.error(f"Failed to create tag '{tag_name}': {response.status_code}, Response: {response.text}")
         return None
@@ -459,4 +469,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
