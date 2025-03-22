@@ -1,130 +1,203 @@
-# Network Security & Automation Tools
+<div align="center">
 
-A professional collection of network security and automation tools.
+# 🛡️ NetSecTools 🛡️
 
-## 🔧 Project Structure
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
+[![Maintained](https://img.shields.io/badge/Maintained%3F-yes-green.svg)](https://github.com/nfline/pythonProject/commits/master)
+
+**Professional network security and automation toolkit for network engineers and security professionals**
+
+[Features](#-key-features) • 
+[Installation](#-installation) • 
+[Usage](#-usage-examples) • 
+[Modules](#-modules) • 
+[Security](#-security-notes) • 
+[License](#-license)
+
+</div>
+
+## 📋 Overview
+
+NetSecTools is a comprehensive collection of Python tools designed for network engineers, security professionals, and IT administrators. The toolkit provides solutions for network monitoring, security assessment, and automation tasks, helping you efficiently manage and secure your network infrastructure.
+
+<div align="center">
+<table>
+<tr>
+<td align="center"><b>🔍 Monitoring</b></td>
+<td align="center"><b>🔒 Security</b></td>
+<td align="center"><b>⚙️ Automation</b></td>
+</tr>
+<tr>
+<td>
+• ThousandEyes integration<br>
+• Azure data sync<br>
+• Performance monitoring
+</td>
+<td>
+• Shodan API integration<br>
+• ExtraHop analysis<br>
+• WAF management
+</td>
+<td>
+• System automation<br>
+• IP address management<br>
+• URL validation
+</td>
+</tr>
+</table>
+</div>
+
+## ✨ Key Features
+
+- **Integrated Monitoring** – Connect ThousandEyes with Azure for comprehensive network visibility
+- **Security Assessment** – Leverage Shodan for external attack surface mapping
+- **Automation Tools** – Streamline repetitive tasks and improve operational efficiency
+- **Network Analysis** – Utilize ExtraHop for deep packet inspection and analytics
+- **WAF Management** – Configure and monitor web application firewalls
+- **Utility Scripts** – Solve common networking challenges with purpose-built tools
+
+## 🔧 Installation
+
+```bash
+# Clone the repository
+git clone https://github.com/nfline/pythonProject.git
+cd pythonProject
+
+# Set up a virtual environment (recommended)
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Configure environment variables
+cp .env.example .env
+# Edit .env with your API keys and configuration
+```
+
+## 📂 Project Structure
 
 ```
 pythonProject/
-├── monitoring/
-│   └── 1000eyes_sync_azure.py    # ThousandEyes Azure integration tool
-├── security/
-│   ├── extrahop/                 # ExtraHop network analysis tools
-│   ├── shodan/                   # Shodan API tools
-│   │   └── search_host.py        # Host information lookup tool
-│   └── waf/                      # Web application firewall tools
-├── automation/
-│   ├── active_mouse.py          # Mouse activity automation tool
-│   └── random_ip.py             # IP address generator
-└── tools/                        # Utility tools
-    └── url_validator.py         # URL validation tool
+│
+├── monitoring/           # Network monitoring tools
+│   └── 1000eyes_sync_azure.py
+│
+├── security/             # Security assessment and management
+│   ├── extrahop/         # ExtraHop network analysis tools
+│   ├── shodan/           # Shodan API integration
+│   └── waf/              # Web application firewall tools
+│
+├── automation/           # Task automation tools
+│   ├── active_mouse.py   # System activity simulation
+│   └── random_ip.py      # IP address generation
+│
+└── tools/                # Utility scripts
+    ├── url_validator.py  # URL validation tool
+    └── gethostname.py    # Hostname resolution utility
 ```
 
-## 🚀 Main Features
+## 🚀 Usage Examples
 
-### Monitoring Tools
-- **ThousandEyes Integration**
-  - Azure data synchronization
-  - User management automation
-  - Performance monitoring
+### ThousandEyes Azure Synchronization
 
-- **Host Search Tools**
-  - IP-based host information lookup
-  - Network asset management
-  - Batch host operations
+Sync monitoring data between ThousandEyes and Azure:
 
-### Security Tools
-- **ExtraHop Tools**
-  - Network traffic analysis
-  - Security threat detection
-  - Performance monitoring
-
-- **Shodan Integration**
-  - Asset discovery
-  - Vulnerability scanning
-  - Security assessment
-
-- **WAF Management**
-  - Rule configuration
-  - Attack protection
-  - Log analysis
-
-### Automation Tools
-- **Mouse Activity Automation**
-  - System sleep prevention
-  - Automated operations
-  - Scheduled tasks
-
-- **IP Tools**
-  - Random IP generation
-  - Address pool management
-  - Network segmentation
-
-## 📦 Installation Requirements
-
-- Python 3.8+
-- pip package manager
-
-### Dependency Installation
-```bash
-pip install -r requirements.txt
-```
-
-## 🔑 Configuration Guide
-
-### ThousandEyes Configuration
 ```python
-# Environment variables
-THOUSANDEYES_TOKEN = "your_token"
-AZURE_STORAGE_CONNECTION_STRING = "your_connection_string"
-TE_LOGIN_ACCOUNT_GROUP_ID = "your_login_account_group_id"
-TE_ACCOUNT_GROUP_ID = "your_account_group_id"
-```
+# Set required environment variables
+export THOUSANDEYES_TOKEN="your_token"
+export AZURE_STORAGE_CONNECTION_STRING="your_connection_string"
 
-### Shodan Configuration
-```python
-# Environment variable
-SHODAN_API_KEY = "your_api_key"
-```
-
-## 📖 Usage Examples
-
-### ThousandEyes Synchronization
-```python
+# Run the synchronization
 python monitoring/1000eyes_sync_azure.py
 ```
 
-### Host Search
+### Shodan Host Search
+
+Look up host information using Shodan:
+
 ```python
-python shodan/search_host.py --target "hostname"
+# Create an Excel file with IP addresses in the first column
+# Run the script to fetch host information
+python shodan/search_host.py
 ```
 
 ### URL Validation
+
+Validate URLs from an Excel spreadsheet:
+
 ```python
-python tools/url_validator.py --input "test_urls.xlsx"
+# Prepare Excel file with URLs in a column named 'URL'
+python tools/url_validator.py
 ```
 
-## 🛡️ Security Notes
+## 🧩 Modules
 
-- All API keys and sensitive information should be managed using environment variables or configuration files
-- Follow the principle of least privilege
-- Regularly update dependencies to fix security vulnerabilities
+<details>
+<summary><b>Monitoring Module</b></summary>
 
-## 🔄 Changelog
+Tools for network monitoring and performance tracking:
 
-### 2024.03
-- Optimized project structure
-- Updated documentation
-- Cleaned up redundant code
+- **ThousandEyes Integration**: Synchronize monitoring data with Azure
+- **Host Search**: Find and track network assets
+</details>
 
-## 👥 Maintainer
+<details>
+<summary><b>Security Module</b></summary>
 
-- [@nfline](https://github.com/nfline)
+Tools for security assessment and threat detection:
 
-## 📄 License
+- **Shodan Integration**: External attack surface mapping
+- **ExtraHop Analysis**: Network traffic inspection
+- **WAF Management**: Web application firewall configuration
+</details>
 
-[MIT](LICENSE) © nfline
+<details>
+<summary><b>Automation Module</b></summary>
+
+Tools to automate routine tasks:
+
+- **Mouse Activity**: Prevent system timeouts
+- **IP Generation**: Create IP addresses for testing
+</details>
+
+<details>
+<summary><b>Utility Tools</b></summary>
+
+General-purpose network utilities:
+
+- **URL Validator**: Check URL accessibility
+- **Hostname Resolver**: DNS and hostname utilities
+</details>
+
+## 🔐 Security Notes
+
+- Store API keys and credentials as environment variables
+- Review code before executing in production environments
+- Follow the principle of least privilege when configuring API access
+- Regularly update dependencies to patch security vulnerabilities
+
+## 📊 Compatibility
+
+- Python 3.8 or higher
+- Windows, macOS, and Linux compatible
+- Requires appropriate API access for ThousandEyes, Shodan, and Azure services
+
+## 📜 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## 👤 Author
+
+**nfline** - Network Security Engineer
+
+[![GitHub](https://img.shields.io/badge/GitHub-nfline-181717?style=flat&logo=github)](https://github.com/nfline)
 
 ---
 
-If you find this project helpful, please give it a star ⭐
+<div align="center">
+
+If you find this toolkit useful, please consider giving it a star ⭐
+
+</div>
