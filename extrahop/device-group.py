@@ -32,10 +32,20 @@ def update_device_group(token, rules):
         'Authorization': f'Bearer {token}',
         'Content-Type': 'application/json'
     }
+    
     payload = {
         "filter": {
-            "rules": rules,
-            "operator": "or"
+            "rules": [
+                {
+                    "field": "group",
+                    "operator": "has_filter",
+                    "filter": {
+                        "rules": rules,
+                        "operator": "or"
+                    }
+                }
+            ],
+            "operator": "and"
         }
     }
     print("Sending payload:", json.dumps(payload, indent=4))
