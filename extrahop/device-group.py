@@ -33,19 +33,16 @@ def update_device_group(token, rules):
         'Content-Type': 'application/json'
     }
     
+    # Creating nested filter structure based on ExtraHop API
     payload = {
         "filter": {
+            "operator": "and",
             "rules": [
                 {
-                    "field": "group",
-                    "operator": "has_filter",
-                    "filter": {
-                        "rules": rules,
-                        "operator": "or"
-                    }
+                    "operator": "or",
+                    "rules": rules
                 }
-            ],
-            "operator": "and"
+            ]
         }
     }
     print("Sending payload:", json.dumps(payload, indent=4))
