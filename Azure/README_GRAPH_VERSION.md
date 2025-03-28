@@ -1,52 +1,51 @@
 # Azure Network Traffic Analyzer (Resource Graph Version)
 
-This advanced tool allows you to retrieve network traffic information from Azure Network Security Groups (NSGs) across multiple subscriptions and resource groups using Azure Resource Graph API. It exports the data to Excel format with comprehensive traffic details.
+This tool analyzes Azure Network Traffic by querying flow logs across multiple subscriptions and resource groups. It uses Azure Resource Graph API for efficient discovery of resources and Azure CLI for retrieving flow log data.
+
+## Important Note: Read-Only Mode
+
+This script operates in **read-only mode by default**. It will:
+- **NOT** create any storage accounts
+- **NOT** enable Network Watcher
+- **NOT** configure flow logs
+- **ONLY** read from NSGs that already have flow logs enabled
+
+This ensures the script is safe to run in production environments and won't modify your Azure configuration.
 
 ## Features
 
-- Retrieve network traffic data via Azure NSG flow logs
-- Filter traffic by IP address or subnet
-- Work across multiple Azure subscriptions simultaneously
-- Automatic cross-subscription resource discovery
+- Search for traffic by IP address or subnet
+- Support for multiple subscriptions and resource groups
+- Export results to Excel with formatted worksheets
+- Process devices in bulk from an Excel input file
 - Parallel processing for improved performance
-- Read device list from Excel file for batch processing
-- Export results to organized Excel workbook with multiple sheets
-- Automatic flow log enabling if not already enabled
-- Configurable time range for data collection
-- Detailed traffic information including source/destination addresses, ports, protocols, and traffic volume
+- Built-in diagnostic tools for troubleshooting
+- Production-safe read-only operation
 
 ## Prerequisites
 
 - Python 3.6 or later
 - Azure CLI installed and configured
-- An active Azure subscription
-- Appropriate permissions for Resource Graph API and NSG access
-- User or service principal with Reader role (minimum) across target subscriptions
+- Azure subscription with appropriate permissions
+- Network Watcher and flow logs **must be pre-configured** on NSGs you want to analyze
 
 ## Installation
 
 1. Clone or download this repository
-2. Install the required dependencies:
+2. Install dependencies:
 
-```
+```bash
 pip install -r requirements_graph.txt
 ```
 
-Contents of requirements_graph.txt:
-```
-pandas
-tqdm
-openpyxl
-ipaddress
-azure-identity
-azure-mgmt-resourcegraph
-```
+3. Ensure Azure CLI is installed:
+   - Windows: https://docs.microsoft.com/en-us/cli/azure/install-azure-cli-windows
+   - macOS: https://docs.microsoft.com/en-us/cli/azure/install-azure-cli-macos
+   - Linux: https://docs.microsoft.com/en-us/cli/azure/install-azure-cli-linux
 
-3. Make sure you have Azure CLI installed. If not, follow the [official installation guide](https://docs.microsoft.com/en-us/cli/azure/install-azure-cli).
+4. Log in to Azure:
 
-4. Log in to your Azure account:
-
-```
+```bash
 az login
 ```
 
@@ -54,186 +53,165 @@ az login
 
 ### Basic Usage
 
-The Resource Graph version doesn't require a resource group to be specified - it can discover resources across all subscriptions you have access to.
+Search for traffic related to a specific IP address:
 
-#### Filtering by IP address:
-
-```
-python azure_traffic_analyzer_graph.py --ip 10.0.0.5 --output traffic_report.xlsx
+```bash
+python azure_traffic_analyzer_graph.py --ip 10.0.0.50 --output traffic_report.xlsx
 ```
 
-#### Filtering by subnet:
+Search for traffic in a subnet:
 
-```
-python azure_traffic_analyzer_graph.py --subnet 10.0.0.0/24 --output traffic_report.xlsx
-```
-
-#### Limit to specific subscription:
-
-```
-python azure_traffic_analyzer_graph.py --subscription YOUR_SUBSCRIPTION_ID --ip 10.0.0.5 --output traffic_report.xlsx
+```bash
+python azure_traffic_analyzer_graph.py --subnet 10.0.0.0/24 --output subnet_traffic.xlsx
 ```
 
-#### Limit to specific resource group:
+### Advanced Options
 
-```
-python azure_traffic_analyzer_graph.py --resource-group YOUR_RESOURCE_GROUP --ip 10.0.0.5 --output traffic_report.xlsx
-```
+Filter by specific Network Security Group:
 
-#### Specify time range:
-
-```
-python azure_traffic_analyzer_graph.py --ip 10.0.0.5 --days 7 --hours 12 --output traffic_report.xlsx
+```bash
+python azure_traffic_analyzer_graph.py --ip 10.0.0.50 --nsg my-nsg --output traffic_report.xlsx
 ```
 
-#### Control parallel processing:
+Limit search to specific subscription:
 
+```bash
+python azure_traffic_analyzer_graph.py --ip 10.0.0.50 --subscription "00000000-0000-0000-0000-000000000000" --output traffic_report.xlsx
 ```
-python azure_traffic_analyzer_graph.py --ip 10.0.0.5 --max-concurrent 5 --output traffic_report.xlsx
+
+Limit search to specific resource group:
+
+```bash
+python azure_traffic_analyzer_graph.py --ip 10.0.0.50 --resource-group "my-resource-group" --output traffic_report.xlsx
 ```
 
-### Using Excel Device List
+Adjust time range (default is 1 day):
 
-You can provide an Excel file with a list of devices to analyze traffic for multiple devices at once:
-
+```bash
+python azure_traffic_analyzer_graph.py --ip 10.0.0.50 --days 7 --output traffic_report.xlsx
 ```
+
+Process multiple devices from Excel file:
+
+```bash
 python azure_traffic_analyzer_graph.py --devices-file devices.xlsx --output traffic_report.xlsx
 ```
 
-The Excel file should contain at least two columns:
-- A column named "name" for device names
-- A column named "ipaddr" for IP addresses
+Run diagnostic tests to troubleshoot Azure CLI issues:
 
-If your Excel uses different column names, you can specify them:
-
-```
-python azure_traffic_analyzer_graph.py --devices-file devices.xlsx --name-column "DeviceName" --ip-column "IPAddress" --output traffic_report.xlsx
+```bash
+python azure_traffic_analyzer_graph.py --diagnose
 ```
 
-### Command Line Options
+### Preparing Your Azure Environment
 
-| Option | Description |
-|--------|-------------|
-| `--ip` | IP address to filter results |
-| `--subnet` | Subnet in CIDR notation (e.g., 10.0.0.0/24) |
-| `--nsg` | Network Security Group name (optional) |
-| `--subscription`, `-s` | Specific subscription ID (optional, omit to search all accessible subscriptions) |
-| `--resource-group`, `-g` | Specific resource group (optional, omit to search all accessible resource groups) |
-| `--days` | Number of days to look back (default: 1) |
-| `--hours` | Number of hours to look back (default: 0) |
-| `--output`, `-o` | Output Excel file path (default: azure_traffic_data.xlsx) |
-| `--devices-file`, `-df` | Excel file containing device names and IP addresses |
-| `--name-column` | Column name for device names in the Excel file (default: name) |
-| `--ip-column` | Column name for IP addresses in the Excel file (default: ipaddr) |
-| `--max-concurrent` | Maximum number of concurrent queries (default: 3) |
-| `--verbose`, `-v` | Enable verbose output |
+Since this script operates in read-only mode, you need to ensure that:
 
-## Output Format
+1. Network Watcher is enabled in your regions
+2. Flow logs are enabled on the NSGs you want to analyze
+3. A storage account is configured for these flow logs
 
-The tool exports the data to an Excel file with the following structure:
+You can configure these through the Azure Portal or Azure CLI before running this script.
 
-### When Using Device List Mode
+### Full Command Reference
 
-1. **Device Summary** sheet:
-   - Device Name
-   - Total Traffic (bytes)
-   - Connection Count
+```
+usage: azure_traffic_analyzer_graph.py [-h] [--ip IP] [--subnet SUBNET] [--nsg NSG]
+                                      [--subscription SUBSCRIPTION] [--resource-group RESOURCE_GROUP]
+                                      [--days DAYS] [--hours HOURS] [--output OUTPUT]
+                                      [--devices-file DEVICES_FILE] [--name-column NAME_COLUMN]
+                                      [--ip-column IP_COLUMN] [--max-concurrent MAX_CONCURRENT]
+                                      [--verbose] [--diagnose] [--read-only]
 
-2. **Individual Device** sheets (one per device):
-   - Full traffic details for each device
+Analyze Azure Network Traffic using Resource Graph API and export to Excel
 
-3. **All Traffic** sheet:
-   - Combined traffic data from all devices
-
-### When Using IP/Subnet Mode
-
-1. **All Traffic** sheet:
-   - timestamp: Time when the traffic occurred
-   - source_ip: Source IP address
-   - source_port: Source port
-   - destination_ip: Destination IP address
-   - destination_port: Destination port
-   - protocol: Protocol (TCP/UDP)
-   - direction: Traffic direction (Inbound/Outbound)
-   - action: Allow/Deny action
-   - traffic_bytes: Volume of traffic in bytes
-   - rule: NSG rule that was applied
-
-## Cross-Subscription Support
-
-This version uses Azure Resource Graph API to search for resources across all subscriptions you have access to. Key benefits:
-
-1. **Single-command cross-subscription search**: No need to run the tool multiple times for different subscriptions
-2. **Efficient querying**: Resource Graph API is optimized for cross-subscription queries
-3. **Parallel processing**: The tool performs multiple operations concurrently for better performance
-
-## Required Permissions
-
-To use this tool with Resource Graph API, your Azure account needs:
-
-1. **Microsoft.ResourceGraph/resources/action** permission (included in the Reader role)
-2. Appropriate permissions on NSGs and Network Watcher in each target subscription
-3. Ability to create/manage storage accounts (if flow logs need to be enabled)
-
-The easiest way to ensure proper permissions is to have at least Reader role on subscriptions and Contributor role on Network Watcher resource groups.
-
-## Advanced Features
-
-### Parallel Processing
-
-The tool uses Python's concurrent.futures module to process multiple NSGs in parallel. You can control the degree of parallelism with the `--max-concurrent` parameter.
-
-### Resource Discovery
-
-The Resource Graph version uses advanced queries to find:
-- Network interfaces with specific IP addresses
-- Virtual machines within a specified subnet
-- Network Security Groups across subscriptions
+optional arguments:
+  -h, --help            show this help message and exit
+  --ip IP               IP address to filter results
+  --subnet SUBNET       Subnet in CIDR notation (e.g., 10.0.0.0/24) to filter results
+  --nsg NSG             Network Security Group name (optional)
+  --subscription SUBSCRIPTION, -s SUBSCRIPTION
+                        Specific subscription ID (optional, omit to search all accessible subscriptions)
+  --resource-group RESOURCE_GROUP, -g RESOURCE_GROUP
+                        Specific resource group (optional, omit to search all accessible resource groups)
+  --days DAYS           Number of days to look back (default: 1)
+  --hours HOURS         Number of hours to look back (default: 0)
+  --output OUTPUT, -o OUTPUT
+                        Output Excel file path
+  --devices-file DEVICES_FILE, -df DEVICES_FILE
+                        Excel file containing device names and IP addresses
+  --name-column NAME_COLUMN
+                        Column name for device names in the Excel file (default: name)
+  --ip-column IP_COLUMN
+                        Column name for IP addresses in the Excel file (default: ipaddr)
+  --max-concurrent MAX_CONCURRENT
+                        Maximum number of concurrent queries (default: 3)
+  --verbose, -v         Enable verbose output
+  --diagnose            Run diagnostic tests and exit
+  --read-only           Run in read-only mode, do not modify any Azure configurations (default: True)
+```
 
 ## Troubleshooting
 
-### Resource Graph API Errors
+### Azure CLI Not Found
 
-If you encounter errors with Resource Graph API:
+If you see an error about Azure CLI not being found, ensure that:
 
-1. Verify your account has the necessary permissions (Reader role or equivalent)
-2. Check that the Azure libraries are installed correctly
-3. Try running with the `--verbose` flag for more detailed output
+1. Azure CLI is installed correctly
+2. The installation directory is in your system PATH
+3. Try running the script with the `--diagnose` flag to find more details:
 
-### No Data in Output
+```bash
+python azure_traffic_analyzer_graph.py --diagnose
+```
 
-If you're not seeing any data in the output Excel file:
+### Subprocess Execution Issues on Windows
 
-1. Verify the flow logs are enabled for your NSGs
-2. Check that the IP address or subnet exists in your Azure environment
-3. Try extending the time range (--days parameter)
-4. Ensure your Azure account has appropriate permissions
+On Windows systems, you might encounter issues with subprocess command execution. Try:
 
-### Authentication Issues
+1. Running PowerShell or Command Prompt as Administrator
+2. Ensuring Azure CLI commands work directly from your command line
+3. Using the `--diagnose` flag for detailed debugging information
 
-The tool uses DefaultAzureCredential which attempts several authentication methods:
+### No Subscriptions Found
 
-1. Environment variables
-2. Managed identity
-3. Visual Studio Code credentials
-4. Azure CLI credentials
-5. Interactive browser authentication
+If the script cannot find subscriptions:
 
-If authentication fails, try explicitly logging in with `az login` before running the tool.
+1. Confirm you are logged in with `az login`
+2. Verify you have access to subscriptions in Azure Portal
+3. Try running `az account list` directly in your terminal
+4. Check if your Azure account requires multi-factor authentication
+5. Use the `--diagnose` flag to run diagnostic tests
 
-## FAQ
+### Flow Logs Not Available
 
-### Q: How does this version differ from the standard CLI version?
-A: This version uses Azure Resource Graph API to query across multiple subscriptions simultaneously, and processes NSGs in parallel for better performance.
+If flow logs aren't available:
 
-### Q: Does this require additional permissions compared to the CLI version?
-A: Yes, it requires the Microsoft.ResourceGraph/resources/action permission, which is included in the Reader role.
+1. Ensure Network Watcher is enabled in your region
+2. Wait a few minutes as flow logs may take time to activate
+3. Verify you have permissions to view/enable flow logs
+4. Check if NSG resource has been created recently (flow logs need time to populate)
 
-### Q: Will this tool work in Azure government clouds?
-A: Yes, but you may need to specify the cloud environment through Azure CLI login before running the tool.
+## Excel File Format for Device Input
 
-### Q: Is this tool suitable for very large Azure environments?
-A: Yes, the Resource Graph version is specifically designed for large environments with multiple subscriptions and many NSGs.
+When using the `--devices-file` option, the Excel file should contain at least two columns:
+
+- A column for device names (default column name: `name`)
+- A column for IP addresses (default column name: `ipaddr`)
+
+Example format:
+
+| name        | ipaddr       |
+|-------------|--------------|
+| webserver01 | 10.0.0.50    |
+| dbserver01  | 10.0.0.51    |
+| appserver01 | 10.0.1.100   |
+
+You can customize the column names using the `--name-column` and `--ip-column` parameters.
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## License
 
