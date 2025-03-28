@@ -15,7 +15,7 @@ import sys
 import json
 import argparse
 import subprocess
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from tqdm import tqdm
 import pandas as pd
 from pathlib import Path
@@ -24,6 +24,54 @@ import concurrent.futures
 from azure.identity import DefaultAzureCredential
 from azure.mgmt.resourcegraph import ResourceGraphClient
 from azure.mgmt.resourcegraph.models import QueryRequest
+
+# Check if required packages are installed
+def check_dependencies():
+    missing_packages = []
+    
+    # Check core packages
+    try:
+        import pandas
+    except ImportError:
+        missing_packages.append("pandas")
+    
+    try:
+        import tqdm
+    except ImportError:
+        missing_packages.append("tqdm")
+    
+    try:
+        import openpyxl
+    except ImportError:
+        missing_packages.append("openpyxl")
+    
+    try:
+        import ipaddress
+    except ImportError:
+        missing_packages.append("ipaddress")
+    
+    # Check Azure packages
+    try:
+        from azure.identity import DefaultAzureCredential
+    except ImportError:
+        missing_packages.append("azure-identity")
+    
+    try:
+        from azure.mgmt.resourcegraph import ResourceGraphClient
+    except ImportError:
+        missing_packages.append("azure-mgmt-resourcegraph")
+    
+    if missing_packages:
+        print("Error: Missing required Python packages:")
+        for pkg in missing_packages:
+            print(f"  - {pkg}")
+        print("\nPlease install the missing packages with:")
+        print(f"pip install {' '.join(missing_packages)}")
+        print("\nOr install all requirements with:")
+        print("pip install -r requirements_graph.txt")
+        return False
+    
+    return True
 
 # Configure argument parser
 def parse_arguments():
@@ -47,15 +95,52 @@ def parse_arguments():
 # Check if Azure CLI is installed and logged in
 def check_azure_cli():
     try:
-        # Check if Azure CLI is installed
-        result = subprocess.run(['az', '--version'], capture_output=True, text=True)
+        # Try with standard command
+        az_command = 'az'
+        
+        # On Windows, also check common installation paths if standard command fails
+        if os.name == 'nt':  # Windows
+            possible_paths = [
+                r'C:\Program Files (x86)\Microsoft SDKs\Azure\CLI2\wbin\az.cmd',
+                r'C:\Program Files\Microsoft SDKs\Azure\CLI2\wbin\az.cmd',
+                os.path.expanduser(r'~\AppData\Local\Programs\Microsoft SDKs\Azure\CLI2\wbin\az.cmd'),
+                # Add more potential paths if needed
+            ]
+            
+            # Try standard command first
+            try:
+                result = subprocess.run([az_command, '--version'], capture_output=True, text=True)
+                if result.returncode != 0:
+                    raise Exception("Standard 'az' command failed")
+            except Exception as e:
+                # Try alternate paths
+                found = False
+                for path in possible_paths:
+                    if os.path.exists(path):
+                        az_command = path
+                        found = True
+                        print(f"Using Azure CLI at: {path}")
+                        break
+                
+                if not found:
+                    print("Error: Azure CLI is not installed or not in PATH.")
+                    print("Please install Azure CLI: https://docs.microsoft.com/en-us/cli/azure/install-azure-cli")
+                    print("Common installation paths checked:")
+                    for path in possible_paths:
+                        print(f"  - {path}")
+                    print("\nIf Azure CLI is installed but in a different location, please add it to your PATH.")
+                    sys.exit(1)
+        
+        # Check Azure CLI version
+        result = subprocess.run([az_command, '--version'], capture_output=True, text=True)
         if result.returncode != 0:
-            print("Error: Azure CLI is not installed or not in PATH.")
-            print("Please install Azure CLI: https://docs.microsoft.com/en-us/cli/azure/install-azure-cli")
+            print("Error: Azure CLI check failed.")
+            print(f"Command output: {result.stdout}")
+            print(f"Command error: {result.stderr}")
             sys.exit(1)
         
         # Check if user is logged in
-        result = subprocess.run(['az', 'account', 'show'], capture_output=True, text=True)
+        result = subprocess.run([az_command, 'account', 'show'], capture_output=True, text=True)
         if result.returncode != 0:
             print("Error: Not logged in to Azure CLI.")
             print("Please login using: az login")
@@ -64,13 +149,18 @@ def check_azure_cli():
         print("Azure CLI check passed. You are logged in.")
     except Exception as e:
         print(f"Error checking Azure CLI: {str(e)}")
+        print("\nPlease ensure Azure CLI is installed and accessible from the command line.")
+        print("Installation guide: https://docs.microsoft.com/en-us/cli/azure/install-azure-cli")
         sys.exit(1)
 
 # Get Azure subscription IDs
 def get_subscriptions():
+    # Global variable to store az command path
+    global az_command
+    
     try:
         print("Retrieving accessible subscriptions...")
-        cmd = ['az', 'account', 'list', '--query', '[].id', '--output', 'tsv']
+        cmd = [az_command, 'account', 'list', '--query', '[].id', '--output', 'tsv']
         result = subprocess.run(cmd, capture_output=True, text=True)
         
         if result.returncode != 0:
@@ -211,6 +301,9 @@ def find_vms_in_subnet(client, subscriptions, subnet):
 
 # Enable flow logs if not already enabled
 def enable_flow_logs(nsg):
+    # Global variable to store az command path
+    global az_command
+    
     resource_group = nsg['resourceGroup']
     nsg_id = nsg['id']
     nsg_name = nsg['name']
@@ -218,7 +311,7 @@ def enable_flow_logs(nsg):
     
     # Set current subscription context
     set_subscription_cmd = [
-        'az', 'account', 'set', 
+        az_command, 'account', 'set', 
         '--subscription', subscription_id
     ]
     
@@ -233,7 +326,7 @@ def enable_flow_logs(nsg):
         
     # Check if flow logs are already enabled for this NSG
     check_cmd = [
-        'az', 'network', 'watcher', 'flow-log', 'show',
+        az_command, 'network', 'watcher', 'flow-log', 'show',
         '--resource-group', resource_group,
         '--nsg', nsg_id,
     ]
@@ -253,7 +346,7 @@ def enable_flow_logs(nsg):
     
     # Check if storage account exists
     storage_cmd = [
-        'az', 'storage', 'account', 'show',
+        az_command, 'storage', 'account', 'show',
         '--name', storage_account_name,
         '--resource-group', resource_group
     ]
@@ -262,7 +355,7 @@ def enable_flow_logs(nsg):
     if result.returncode != 0:
         # Create storage account
         create_storage_cmd = [
-            'az', 'storage', 'account', 'create',
+            az_command, 'storage', 'account', 'create',
             '--name', storage_account_name,
             '--resource-group', resource_group,
             '--kind', 'StorageV2',
@@ -280,7 +373,7 @@ def enable_flow_logs(nsg):
     
     # Enable Network Watcher if not enabled
     watcher_cmd = [
-        'az', 'network', 'watcher', 'configure',
+        az_command, 'network', 'watcher', 'configure',
         '--resource-group', resource_group,
         '--locations', location,
         '--enabled', 'true'
@@ -293,7 +386,7 @@ def enable_flow_logs(nsg):
     
     # Enable flow logs
     enable_cmd = [
-        'az', 'network', 'watcher', 'flow-log', 'create',
+        az_command, 'network', 'watcher', 'flow-log', 'create',
         '--resource-group', resource_group,
         '--nsg', nsg_id,
         '--storage-account', storage_account_name,
@@ -313,6 +406,9 @@ def enable_flow_logs(nsg):
 
 # Get flow log data with subscription context
 def get_flow_log_data(nsg, start_time, end_time):
+    # Global variable to store az command path
+    global az_command
+    
     resource_group = nsg['resourceGroup']
     nsg_id = nsg['id']
     nsg_name = nsg['name']
@@ -320,7 +416,7 @@ def get_flow_log_data(nsg, start_time, end_time):
     
     # Set current subscription context
     set_subscription_cmd = [
-        'az', 'account', 'set', 
+        az_command, 'account', 'set', 
         '--subscription', subscription_id
     ]
     
@@ -333,12 +429,12 @@ def get_flow_log_data(nsg, start_time, end_time):
         print(f"Error setting subscription context: {str(e)}")
         return []
     
-    # Format the times as required by Azure CLI
+    # Format the times as required by Azure CLI (ISO format with Z suffix for UTC)
     start_time_str = start_time.strftime('%Y-%m-%dT%H:%M:%SZ')
     end_time_str = end_time.strftime('%Y-%m-%dT%H:%M:%SZ')
     
     cmd = [
-        'az', 'network', 'watcher', 'flow-log', 'show-data',
+        az_command, 'network', 'watcher', 'flow-log', 'show-data',
         '--resource-group', resource_group,
         '--nsg', nsg_id,
         '--start-time', start_time_str,
@@ -428,7 +524,8 @@ def parse_flow_logs(records, device_name=None):
                     continue
                 
                 timestamp_unix = int(parts[0])
-                timestamp = datetime.utcfromtimestamp(timestamp_unix).strftime('%Y-%m-%d %H:%M:%S')
+                # Use timezone-aware datetime
+                timestamp = datetime.fromtimestamp(timestamp_unix, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
                 source_ip = parts[1]
                 dest_ip = parts[2]
                 source_port = parts[3]
@@ -612,10 +709,18 @@ def load_devices_from_excel(file_path, name_column='name', ip_column='ipaddr'):
         return []
 
 def main():
+    # Initialize global variable for az command
+    global az_command
+    az_command = 'az'  # Default value
+    
     args = parse_arguments()
     
-    # Set up time range
-    end_time = datetime.utcnow()
+    # Check required dependencies
+    if not check_dependencies():
+        sys.exit(1)
+    
+    # Set up time range using timezone-aware objects
+    end_time = datetime.now(timezone.utc)
     start_time = end_time - timedelta(days=args.days, hours=args.hours)
     
     print(f"=== Azure Network Traffic Analyzer (Resource Graph Version) ===")
