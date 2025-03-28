@@ -89,14 +89,20 @@ def parse_arguments():
     parser.add_argument('--ip-column', default='ipaddr', help='Column name for IP addresses in the Excel file (default: ipaddr)')
     parser.add_argument('--max-concurrent', type=int, default=3, help='Maximum number of concurrent queries (default: 3)')
     parser.add_argument('--verbose', '-v', action='store_true', help='Enable verbose output')
+    parser.add_argument('--diagnose', action='store_true', help='Run diagnostic tests and exit')
     
     return parser.parse_args()
 
 # Check if Azure CLI is installed and logged in
 def check_azure_cli():
+    # Global variables
+    global az_command
+    global use_shell
+    
     try:
         # Try with standard command
         az_command = 'az'
+        use_shell = False
         
         # On Windows, also check common installation paths if standard command fails
         if os.name == 'nt':  # Windows
@@ -120,6 +126,8 @@ def check_azure_cli():
                         az_command = path
                         found = True
                         print(f"Using Azure CLI at: {path}")
+                        # If using .cmd file on Windows, need shell=True
+                        use_shell = path.endswith('.cmd')
                         break
                 
                 if not found:
@@ -132,7 +140,8 @@ def check_azure_cli():
                     sys.exit(1)
         
         # Check Azure CLI version
-        result = subprocess.run([az_command, '--version'], capture_output=True, text=True)
+        print("Testing Azure CLI access...")
+        result = subprocess.run([az_command, '--version'], capture_output=True, text=True, shell=use_shell)
         if result.returncode != 0:
             print("Error: Azure CLI check failed.")
             print(f"Command output: {result.stdout}")
@@ -140,13 +149,15 @@ def check_azure_cli():
             sys.exit(1)
         
         # Check if user is logged in
-        result = subprocess.run([az_command, 'account', 'show'], capture_output=True, text=True)
+        print("Checking Azure login status...")
+        result = subprocess.run([az_command, 'account', 'show'], capture_output=True, text=True, shell=use_shell)
         if result.returncode != 0:
             print("Error: Not logged in to Azure CLI.")
             print("Please login using: az login")
             sys.exit(1)
             
         print("Azure CLI check passed. You are logged in.")
+        
     except Exception as e:
         print(f"Error checking Azure CLI: {str(e)}")
         print("\nPlease ensure Azure CLI is installed and accessible from the command line.")
@@ -155,24 +166,82 @@ def check_azure_cli():
 
 # Get Azure subscription IDs
 def get_subscriptions():
-    # Global variable to store az command path
+    """Get list of subscriptions"""
     global az_command
+    global use_shell
     
+    print("Retrieving Azure subscriptions...")
+    
+    # First, verify account status
     try:
-        print("Retrieving accessible subscriptions...")
-        cmd = [az_command, 'account', 'list', '--query', '[].id', '--output', 'tsv']
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        print("Checking account status...")
+        check_cmd = [az_command, 'account', 'show']
+        result = subprocess.run(check_cmd, capture_output=True, text=True, shell=use_shell)
         
         if result.returncode != 0:
-            print(f"Error retrieving subscriptions: {result.stderr}")
-            return []
+            print(f"Warning: Unable to verify account status. Error: {result.stderr.strip()}")
+            print("This might be normal if you're using a service principal or other authentication method.")
+            print("Attempting to list subscriptions anyway...")
+        else:
+            print(f"Account status verified. Proceeding to list subscriptions.")
+    except Exception as e:
+        print(f"Warning: Error checking account status: {str(e)}")
+        print("Attempting to list subscriptions anyway...")
+    
+    # Try standard command first
+    try:
+        cmd = [az_command, 'account', 'list', '--query', '[].id', '--output', 'tsv']
+        print(f"Executing: {' '.join(cmd)}")
+        result = subprocess.run(cmd, capture_output=True, text=True, shell=use_shell)
         
-        subscriptions = [sub.strip() for sub in result.stdout.strip().split('\n') if sub.strip()]
-        print(f"Found {len(subscriptions)} accessible subscriptions")
-        return subscriptions
+        if result.returncode == 0 and result.stdout.strip():
+            subscriptions = result.stdout.strip().split('\n')
+            print(f"Found {len(subscriptions)} subscription(s)")
+            return subscriptions
+        else:
+            print(f"Warning: Command returned status {result.returncode}")
+            if result.stderr:
+                print(f"Error: {result.stderr.strip()}")
+            elif not result.stdout.strip():
+                print("Command returned empty result. You may not have access to any subscriptions.")
     except Exception as e:
         print(f"Error retrieving subscriptions: {str(e)}")
-        return []
+    
+    # Try alternative approach for Windows if the first attempt failed
+    if sys.platform == 'win32':
+        print("\nAttempting alternative approach for Windows environment...")
+        try:
+            # Try using shell mode with string command
+            cmd_str = f'"{az_command}" account list --query "[].id" --output tsv'
+            print(f"Executing with shell: {cmd_str}")
+            result = subprocess.run(cmd_str, capture_output=True, text=True, shell=True)
+            
+            if result.returncode == 0 and result.stdout.strip():
+                subscriptions = result.stdout.strip().split('\n')
+                print(f"Alternative approach successful! Found {len(subscriptions)} subscription(s)")
+                # Update use_shell for future calls since this worked
+                use_shell = True
+                return subscriptions
+            else:
+                print(f"Alternative approach failed with status {result.returncode}")
+                if result.stderr:
+                    print(f"Error: {result.stderr.strip()}")
+        except Exception as e:
+            print(f"Error with alternative approach: {str(e)}")
+    
+    # If we get here, all attempts failed
+    print("\n===== Troubleshooting Information =====")
+    print("All attempts to retrieve subscriptions failed.")
+    print("Please try these commands directly in your command prompt:")
+    print(f"1. {az_command} --version")
+    print(f"2. {az_command} account show")
+    print(f"3. {az_command} account list")
+    print("\nIf these commands work in your command prompt but fail in this script,")
+    print("you may need to run the script with administrator privileges or check")
+    print("environment variables affecting subprocess execution.")
+    print("\nRun this script with the --diagnose option for more detailed diagnostics.")
+    
+    return []
 
 # Get Resource Graph client
 def get_resource_graph_client():
@@ -303,6 +372,7 @@ def find_vms_in_subnet(client, subscriptions, subnet):
 def enable_flow_logs(nsg):
     # Global variable to store az command path
     global az_command
+    global use_shell
     
     resource_group = nsg['resourceGroup']
     nsg_id = nsg['id']
@@ -316,7 +386,7 @@ def enable_flow_logs(nsg):
     ]
     
     try:
-        result = subprocess.run(set_subscription_cmd, capture_output=True, text=True)
+        result = subprocess.run(set_subscription_cmd, capture_output=True, text=True, shell=use_shell)
         if result.returncode != 0:
             print(f"Error setting subscription context: {result.stderr}")
             return False
@@ -332,7 +402,7 @@ def enable_flow_logs(nsg):
     ]
     
     try:
-        result = subprocess.run(check_cmd, capture_output=True, text=True)
+        result = subprocess.run(check_cmd, capture_output=True, text=True, shell=use_shell)
         if result.returncode == 0 and json.loads(result.stdout):
             print(f"Flow logs already enabled for NSG: {nsg_name}")
             return True
@@ -351,7 +421,7 @@ def enable_flow_logs(nsg):
         '--resource-group', resource_group
     ]
     
-    result = subprocess.run(storage_cmd, capture_output=True, text=True)
+    result = subprocess.run(storage_cmd, capture_output=True, text=True, shell=use_shell)
     if result.returncode != 0:
         # Create storage account
         create_storage_cmd = [
@@ -363,7 +433,7 @@ def enable_flow_logs(nsg):
         ]
         
         print(f"Creating storage account: {storage_account_name}")
-        result = subprocess.run(create_storage_cmd, capture_output=True, text=True)
+        result = subprocess.run(create_storage_cmd, capture_output=True, text=True, shell=use_shell)
         if result.returncode != 0:
             print(f"Error creating storage account: {result.stderr}")
             return False
@@ -379,7 +449,7 @@ def enable_flow_logs(nsg):
         '--enabled', 'true'
     ]
     
-    result = subprocess.run(watcher_cmd, capture_output=True, text=True)
+    result = subprocess.run(watcher_cmd, capture_output=True, text=True, shell=use_shell)
     if result.returncode != 0:
         print(f"Error configuring Network Watcher: {result.stderr}")
         return False
@@ -396,7 +466,7 @@ def enable_flow_logs(nsg):
     ]
     
     print(f"Enabling flow logs for NSG: {nsg_name}")
-    result = subprocess.run(enable_cmd, capture_output=True, text=True)
+    result = subprocess.run(enable_cmd, capture_output=True, text=True, shell=use_shell)
     if result.returncode != 0:
         print(f"Error enabling flow logs: {result.stderr}")
         return False
@@ -408,6 +478,7 @@ def enable_flow_logs(nsg):
 def get_flow_log_data(nsg, start_time, end_time):
     # Global variable to store az command path
     global az_command
+    global use_shell
     
     resource_group = nsg['resourceGroup']
     nsg_id = nsg['id']
@@ -421,7 +492,7 @@ def get_flow_log_data(nsg, start_time, end_time):
     ]
     
     try:
-        result = subprocess.run(set_subscription_cmd, capture_output=True, text=True)
+        result = subprocess.run(set_subscription_cmd, capture_output=True, text=True, shell=use_shell)
         if result.returncode != 0:
             print(f"Error setting subscription context: {result.stderr}")
             return []
@@ -445,7 +516,7 @@ def get_flow_log_data(nsg, start_time, end_time):
     print(f"Time range: {start_time_str} to {end_time_str}")
     
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(cmd, capture_output=True, text=True, shell=use_shell)
         if result.returncode != 0:
             print(f"Error retrieving flow log data: {result.stderr}")
             return []
@@ -708,10 +779,65 @@ def load_devices_from_excel(file_path, name_column='name', ip_column='ipaddr'):
         print(f"Error loading devices from Excel: {str(e)}")
         return []
 
-def main():
-    # Initialize global variable for az command
+# 新增: 诊断函数
+def run_diagnostics():
     global az_command
+    global use_shell
+    
+    print("=== Running Azure CLI Diagnostics ===")
+    print(f"Using Azure CLI command: {az_command}")
+    print(f"Using shell mode: {use_shell}")
+    
+    test_commands = [
+        {"name": "Version Check", "cmd": [az_command, "--version"]},
+        {"name": "Login Status", "cmd": [az_command, "account", "show"]},
+        {"name": "List Subscriptions", "cmd": [az_command, "account", "list", "--output", "table"]},
+        {"name": "List Resource Groups", "cmd": [az_command, "group", "list", "--output", "table"]},
+        {"name": "List Network Security Groups", "cmd": [az_command, "network", "nsg", "list", "--output", "table"]}
+    ]
+    
+    print("\n=== Testing Azure CLI Commands ===")
+    for test in test_commands:
+        print(f"\n> Testing: {test['name']}")
+        print(f"> Command: {' '.join(test['cmd'])}")
+        try:
+            result = subprocess.run(test['cmd'], capture_output=True, text=True, shell=use_shell)
+            print(f"> Return code: {result.returncode}")
+            
+            if result.returncode == 0:
+                print("> Status: SUCCESS")
+                if len(result.stdout) > 1000:
+                    print("> Output (truncated):")
+                    print(result.stdout[:1000] + "...[truncated]")
+                else:
+                    print("> Output:")
+                    print(result.stdout)
+            else:
+                print("> Status: FAILED")
+                print("> Error:")
+                print(result.stderr)
+                
+        except Exception as e:
+            print(f"> Status: ERROR")
+            print(f"> Exception: {str(e)}")
+    
+    print("\n=== Diagnostic Summary ===")
+    print("If you are experiencing issues, try the following:")
+    print("1. Make sure Azure CLI is installed correctly")
+    print("2. Run 'az login' from the command line")
+    print("3. Verify you have access to Azure subscriptions")
+    print("4. For Windows .cmd files, try running the script with Administrator privileges")
+    print("\nDetailed Azure CLI troubleshooting guide:")
+    print("https://docs.microsoft.com/en-us/cli/azure/troubleshoot-azure-cli")
+    
+    return
+
+def main():
+    # Initialize global variables
+    global az_command
+    global use_shell
     az_command = 'az'  # Default value
+    use_shell = False  # Default value
     
     args = parse_arguments()
     
@@ -729,6 +855,11 @@ def main():
     # Check if Azure CLI is installed and user is logged in
     check_azure_cli()
     
+    # Run diagnostics if requested
+    if args.diagnose:
+        run_diagnostics()
+        return
+    
     # Get subscriptions
     subscriptions = []
     if args.subscription:
@@ -738,8 +869,9 @@ def main():
         subscriptions = get_subscriptions()
         if not subscriptions:
             print("No accessible subscriptions found. Please check your Azure credentials.")
+            print("\nTry running with --diagnose to troubleshoot Azure CLI issues.")
             return
-    
+            
     # Initialize Resource Graph client
     graph_client = get_resource_graph_client()
     
