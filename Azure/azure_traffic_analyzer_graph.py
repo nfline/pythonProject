@@ -90,6 +90,8 @@ def parse_arguments():
     parser.add_argument('--max-concurrent', type=int, default=3, help='Maximum number of concurrent queries (default: 3)')
     parser.add_argument('--verbose', '-v', action='store_true', help='Enable verbose output')
     parser.add_argument('--diagnose', action='store_true', help='Run diagnostic tests and exit')
+    parser.add_argument('--read-only', action='store_true', default=True, 
+                      help='Run in read-only mode, do not modify any Azure configurations (default: True)')
     
     return parser.parse_args()
 
@@ -500,6 +502,29 @@ def get_flow_log_data(nsg, start_time, end_time):
         print(f"Error setting subscription context: {str(e)}")
         return []
     
+    # Check if flow logs are enabled for this NSG first
+    check_cmd = [
+        az_command, 'network', 'watcher', 'flow-log', 'show',
+        '--resource-group', resource_group,
+        '--nsg', nsg_id,
+    ]
+    
+    try:
+        check_result = subprocess.run(check_cmd, capture_output=True, text=True, shell=use_shell)
+        if check_result.returncode != 0 or not check_result.stdout.strip():
+            print(f"Flow logs are not enabled for NSG: {nsg_name}")
+            print(f"Skipping this NSG as we are in read-only mode")
+            return []
+            
+        flow_logs_config = json.loads(check_result.stdout)
+        if not flow_logs_config.get('enabled', False):
+            print(f"Flow logs are disabled for NSG: {nsg_name}")
+            print(f"Skipping this NSG as we are in read-only mode")
+            return []
+    except Exception as e:
+        print(f"Error checking flow log status for NSG {nsg_name}: {str(e)}")
+        return []
+    
     # Format the times as required by Azure CLI (ISO format with Z suffix for UTC)
     start_time_str = start_time.strftime('%Y-%m-%dT%H:%M:%SZ')
     end_time_str = end_time.strftime('%Y-%m-%dT%H:%M:%SZ')
@@ -522,7 +547,14 @@ def get_flow_log_data(nsg, start_time, end_time):
             return []
         
         data = json.loads(result.stdout)
-        return data.get('records', [])
+        records = data.get('records', [])
+        
+        if not records:
+            print(f"No flow log data found for NSG: {nsg_name} in the specified time range")
+        else:
+            print(f"Retrieved {len(records)} flow log records for NSG: {nsg_name}")
+            
+        return records
     except Exception as e:
         print(f"Error retrieving flow log data: {str(e)}")
         return []
@@ -851,6 +883,7 @@ def main():
     
     print(f"=== Azure Network Traffic Analyzer (Resource Graph Version) ===")
     print(f"Time Range: {args.days} days, {args.hours} hours (from {start_time} to {end_time})")
+    print(f"Mode: Read-Only (no configuration changes will be made)")
     
     # Check if Azure CLI is installed and user is logged in
     check_azure_cli()
@@ -883,10 +916,9 @@ def main():
         print("No Network Security Groups found. Exiting.")
         return
     
-    # Enable flow logs for all NSGs
-    print("\nEnsuring flow logs are enabled...")
-    for nsg in tqdm(nsgs, desc="Enabling flow logs"):
-        enable_flow_logs(nsg)
+    # Skip flow logs enablement in read-only mode
+    print("\nOperating in read-only mode - not enabling flow logs")
+    print("Note: You will only see data from NSGs with flow logs already enabled")
     
     # For IP or subnet filtering, find related resources
     ip_resources = []
@@ -940,7 +972,10 @@ def main():
                     print(f"Error processing NSG {nsg['name']}: {str(e)}")
         
         if not all_records:
-            print("No matching flow log records found. Exiting.")
+            print("No matching flow log records found. This could be because:")
+            print("1. No flow logs are enabled on the NSGs")
+            print("2. No traffic matching your filter criteria was found")
+            print("3. The time range doesn't contain relevant data")
             return
         
         # Parse flow log data
@@ -954,6 +989,7 @@ def main():
     export_to_excel(all_data, args.output)
     
     print("\nDone!")
+    print("Note: This script ran in read-only mode and did not make any changes to your Azure environment.")
 
 if __name__ == "__main__":
     try:
