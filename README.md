@@ -2,7 +2,7 @@
 
 # :shield: NetSecTools :shield:
 
-<img src="https://raw.githubusercontent.com/nfline/pythonProject/assets/netsectools-banner.png" alt="NetSecTools Banner" width="850px">
+<hr style="height:3px;border:none;background-color:#3498db;margin:20px 0">
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
