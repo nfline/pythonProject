@@ -18,20 +18,25 @@ from datetime import datetime, timedelta
 from tqdm import tqdm
 import pandas as pd
 from pathlib import Path
+import ipaddress
 
 # Configure argument parser
 def parse_arguments():
     parser = argparse.ArgumentParser(description='Analyze Azure Network Traffic and export to Excel')
-    parser.add_argument('--resource-group', '-g', required=True, help='Azure Resource Group')
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument('--resource-group', '-g', help='Azure Resource Group')
+    group.add_argument('--all-resource-groups', '-a', action='store_true', help='Scan all accessible resource groups')
+    group.add_argument('--discover-resource-group', '-d', action='store_true', help='Automatically discover resource group for the given IP or devices')
     parser.add_argument('--ip', help='IP address to filter results')
     parser.add_argument('--subnet', help='Subnet in CIDR notation (e.g., 10.0.0.0/24) to filter results')
     parser.add_argument('--nsg', help='Network Security Group name')
     parser.add_argument('--days', type=int, default=1, help='Number of days to look back (default: 1)')
     parser.add_argument('--hours', type=int, default=0, help='Number of hours to look back (default: 0)')
     parser.add_argument('--output', '-o', default='azure_traffic_data.xlsx', help='Output Excel file path')
-    parser.add_argument('--devices-file', '-d', help='Excel file containing device names and IP addresses')
+    parser.add_argument('--devices-file', '-df', help='Excel file containing device names and IP addresses')
     parser.add_argument('--name-column', default='name', help='Column name for device names in the Excel file (default: name)')
     parser.add_argument('--ip-column', default='ipaddr', help='Column name for IP addresses in the Excel file (default: ipaddr)')
+    parser.add_argument('--max-resource-groups', type=int, default=5, help='Maximum number of resource groups to scan when auto-discovering (default: 5)')
     
     return parser.parse_args()
 
@@ -56,6 +61,65 @@ def check_azure_cli():
     except Exception as e:
         print(f"Error checking Azure CLI: {str(e)}")
         sys.exit(1)
+
+# Get all accessible resource groups
+def get_all_resource_groups():
+    try:
+        print("Retrieving all accessible resource groups...")
+        cmd = ['az', 'group', 'list', '--query', '[].name', '--output', 'tsv']
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            print(f"Error retrieving resource groups: {result.stderr}")
+            return []
+        
+        resource_groups = [rg.strip() for rg in result.stdout.strip().split('\n') if rg.strip()]
+        print(f"Found {len(resource_groups)} accessible resource groups")
+        return resource_groups
+    except Exception as e:
+        print(f"Error retrieving resource groups: {str(e)}")
+        return []
+
+# Find resource group(s) by IP address
+def find_resource_group_by_ip(ip_address):
+    try:
+        print(f"Searching for resource group containing IP: {ip_address}...")
+        cmd = ['az', 'network', 'nic', 'list', 
+               '--query', f"[?ipConfigurations[0].privateIPAddress=='{ip_address}'].resourceGroup", 
+               '--output', 'tsv']
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            print(f"Error searching for IP: {result.stderr}")
+            return []
+        
+        resource_groups = [rg.strip() for rg in result.stdout.strip().split('\n') if rg.strip()]
+        if resource_groups:
+            print(f"Found IP {ip_address} in resource group(s): {', '.join(resource_groups)}")
+        else:
+            print(f"Could not find resource group for IP: {ip_address}")
+        
+        return resource_groups
+    except Exception as e:
+        print(f"Error searching for IP's resource group: {str(e)}")
+        return []
+
+# Find resource groups for multiple devices
+def find_resource_groups_for_devices(devices, max_groups=5):
+    resource_groups = set()
+    
+    print(f"Searching for resource groups for {len(devices)} devices...")
+    for device in tqdm(devices, desc="Finding resource groups"):
+        ip = device['ip']
+        groups = find_resource_group_by_ip(ip)
+        resource_groups.update(groups)
+        
+        # Limit the number of resource groups to avoid excessive scanning
+        if len(resource_groups) >= max_groups:
+            print(f"Reached maximum number of resource groups ({max_groups}). Limiting scan.")
+            break
+    
+    return list(resource_groups)
 
 # Load devices from Excel file
 def load_devices_from_excel(file_path, name_column='name', ip_column='ipaddr'):
@@ -260,27 +324,17 @@ def filter_records(records, ip=None, subnet=None):
                 if ip and (ip == source_ip or ip == dest_ip):
                     filtered_tuples.append(tuple_str)
                 elif subnet:
-                    # Simple CIDR check - would need a proper IP library for production use
-                    subnet_ip, prefix = subnet.split('/')
-                    prefix_bits = int(prefix)
-                    
-                    # Very basic check - this is a simplification
-                    subnet_parts = subnet_ip.split('.')
-                    source_parts = source_ip.split('.')
-                    dest_parts = dest_ip.split('.')
-                    
-                    # Check if the IPs match up to the prefix
-                    source_match = True
-                    dest_match = True
-                    
-                    for i in range(min(4, prefix_bits // 8 + (1 if prefix_bits % 8 else 0))):
-                        if source_parts[i] != subnet_parts[i]:
-                            source_match = False
-                        if dest_parts[i] != subnet_parts[i]:
-                            dest_match = False
-                    
-                    if source_match or dest_match:
-                        filtered_tuples.append(tuple_str)
+                    # Proper CIDR check using ipaddress module
+                    try:
+                        subnet_net = ipaddress.IPv4Network(subnet)
+                        source_in_subnet = ipaddress.IPv4Address(source_ip) in subnet_net
+                        dest_in_subnet = ipaddress.IPv4Address(dest_ip) in subnet_net
+                        
+                        if source_in_subnet or dest_in_subnet:
+                            filtered_tuples.append(tuple_str)
+                    except ValueError:
+                        # Handle invalid IP or subnet format
+                        continue
             
             if filtered_tuples:
                 new_flow = flow.copy()
@@ -429,7 +483,7 @@ def export_to_excel(data, output_file):
         return False
 
 # Process a single device
-def process_device(device, resource_group, nsgs, start_time, end_time):
+def process_device(device, resource_groups, nsgs_by_resource_group, start_time, end_time):
     device_name = device['name']
     device_ip = device['ip']
     
@@ -437,26 +491,29 @@ def process_device(device, resource_group, nsgs, start_time, end_time):
     
     all_device_records = []
     
-    for nsg in nsgs:
-        nsg_name = nsg.get('name')
-        nsg_id = nsg.get('id')
+    for resource_group, nsgs in nsgs_by_resource_group.items():
+        print(f"Checking resource group: {resource_group} for traffic related to {device_name}")
         
-        print(f"Checking NSG: {nsg_name} for traffic related to {device_name}")
-        
-        # Get flow log data
-        records = get_flow_log_data(resource_group, nsg_id, nsg_name, start_time, end_time)
-        if not records:
-            print(f"No flow log data found for NSG: {nsg_name}")
-            continue
-        
-        # Filter records for this device
-        filtered_records = filter_records(records, ip=device_ip)
-        if not filtered_records:
-            print(f"No matching records for device {device_name} in NSG: {nsg_name}")
-            continue
-        
-        print(f"Found traffic data for device {device_name} in NSG: {nsg_name}")
-        all_device_records.extend(filtered_records)
+        for nsg in nsgs:
+            nsg_name = nsg.get('name')
+            nsg_id = nsg.get('id')
+            
+            print(f"Checking NSG: {nsg_name} for traffic related to {device_name}")
+            
+            # Get flow log data
+            records = get_flow_log_data(resource_group, nsg_id, nsg_name, start_time, end_time)
+            if not records:
+                print(f"No flow log data found for NSG: {nsg_name}")
+                continue
+            
+            # Filter records for this device
+            filtered_records = filter_records(records, ip=device_ip)
+            if not filtered_records:
+                print(f"No matching records for device {device_name} in NSG: {nsg_name}")
+                continue
+            
+            print(f"Found traffic data for device {device_name} in NSG: {nsg_name}")
+            all_device_records.extend(filtered_records)
     
     # Parse flow logs with device name
     return parse_flow_logs(all_device_records, device_name)
@@ -469,25 +526,65 @@ def main():
     start_time = end_time - timedelta(days=args.days, hours=args.hours)
     
     print(f"=== Azure Network Traffic Analyzer ===")
-    print(f"Resource Group: {args.resource_group}")
     print(f"Time Range: {args.days} days, {args.hours} hours (from {start_time} to {end_time})")
     
     # Check if Azure CLI is installed and user is logged in
     check_azure_cli()
     
-    # Get NSGs
-    nsgs = get_network_security_groups(args.resource_group, args.nsg)
-    if not nsgs:
-        print("No Network Security Groups found. Exiting.")
+    # Determine resource groups to process
+    resource_groups = []
+    
+    if args.resource_group:
+        resource_groups = [args.resource_group]
+        print(f"Using specified resource group: {args.resource_group}")
+    elif args.all_resource_groups:
+        resource_groups = get_all_resource_groups()
+        print(f"Using all {len(resource_groups)} accessible resource groups")
+    elif args.discover_resource_group:
+        # Auto-discover resource groups based on IP or devices
+        if args.devices_file:
+            devices = load_devices_from_excel(args.devices_file, args.name_column, args.ip_column)
+            if not devices:
+                print("No devices found in the Excel file or error loading file. Exiting.")
+                return
+            resource_groups = find_resource_groups_for_devices(devices, args.max_resource_groups)
+        elif args.ip:
+            resource_groups = find_resource_group_by_ip(args.ip)
+        elif args.subnet:
+            # For subnets, we might need to check all resource groups or limit to a reasonable number
+            print("Auto-discovery for subnets is not precise. Using all accessible resource groups.")
+            resource_groups = get_all_resource_groups()
+            # Limit to reasonable number if too many
+            if len(resource_groups) > args.max_resource_groups:
+                print(f"Limiting to {args.max_resource_groups} resource groups for subnet scanning.")
+                resource_groups = resource_groups[:args.max_resource_groups]
+    
+    if not resource_groups:
+        print("No resource groups found or specified. Exiting.")
         return
     
-    print(f"Found {len(nsgs)} Network Security Group(s)")
+    print(f"Processing {len(resource_groups)} resource group(s): {', '.join(resource_groups)}")
     
-    # Enable flow logs for all NSGs
-    for nsg in nsgs:
-        nsg_name = nsg.get('name')
-        nsg_id = nsg.get('id')
-        enable_flow_logs(args.resource_group, nsg_id, nsg_name)
+    # Get NSGs for all resource groups
+    all_nsgs = {}
+    for resource_group in resource_groups:
+        nsgs = get_network_security_groups(resource_group, args.nsg)
+        if nsgs:
+            all_nsgs[resource_group] = nsgs
+            print(f"Found {len(nsgs)} Network Security Group(s) in {resource_group}")
+        else:
+            print(f"No Network Security Groups found in {resource_group}")
+    
+    if not all_nsgs:
+        print("No Network Security Groups found in any resource group. Exiting.")
+        return
+    
+    # Enable flow logs for all NSGs in all resource groups
+    for resource_group, nsgs in all_nsgs.items():
+        for nsg in nsgs:
+            nsg_name = nsg.get('name')
+            nsg_id = nsg.get('id')
+            enable_flow_logs(resource_group, nsg_id, nsg_name)
     
     all_data = []
     
@@ -500,7 +597,7 @@ def main():
         
         # Process each device
         for device in tqdm(devices, desc="Processing devices"):
-            device_data = process_device(device, args.resource_group, nsgs, start_time, end_time)
+            device_data = process_device(device, resource_groups, all_nsgs, start_time, end_time)
             all_data.extend(device_data)
     else:
         # Process specific IP or subnet if provided
@@ -511,30 +608,33 @@ def main():
         
         all_records = []
         
-        for nsg in tqdm(nsgs, desc="Processing NSGs"):
-            nsg_name = nsg.get('name')
-            nsg_id = nsg.get('id')
+        for resource_group, nsgs in all_nsgs.items():
+            print(f"\nProcessing resource group: {resource_group}")
             
-            print(f"\nProcessing NSG: {nsg_name}")
-            
-            # Get flow log data
-            records = get_flow_log_data(args.resource_group, nsg_id, nsg_name, start_time, end_time)
-            if not records:
-                print(f"No flow log data found for NSG: {nsg_name}")
-                continue
-            
-            print(f"Retrieved {len(records)} flow log records for NSG: {nsg_name}")
-            
-            # Filter records if needed
-            filtered_records = filter_records(records, args.ip, args.subnet)
-            if not filtered_records:
-                print(f"No matching records after filtering for NSG: {nsg_name}")
-                continue
-            
-            all_records.extend(filtered_records)
+            for nsg in tqdm(nsgs, desc=f"Processing NSGs in {resource_group}"):
+                nsg_name = nsg.get('name')
+                nsg_id = nsg.get('id')
+                
+                print(f"\nProcessing NSG: {nsg_name}")
+                
+                # Get flow log data
+                records = get_flow_log_data(resource_group, nsg_id, nsg_name, start_time, end_time)
+                if not records:
+                    print(f"No flow log data found for NSG: {nsg_name}")
+                    continue
+                
+                print(f"Retrieved {len(records)} flow log records for NSG: {nsg_name}")
+                
+                # Filter records if needed
+                filtered_records = filter_records(records, args.ip, args.subnet)
+                if not filtered_records:
+                    print(f"No matching records after filtering for NSG: {nsg_name}")
+                    continue
+                
+                all_records.extend(filtered_records)
         
         if not all_records:
-            print("No matching flow log records found across all NSGs. Exiting.")
+            print("No matching flow log records found across all resource groups and NSGs. Exiting.")
             return
         
         # Parse flow log data
