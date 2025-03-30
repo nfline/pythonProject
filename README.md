@@ -1,6 +1,6 @@
 <div align="center">
 
-# NetSecTools
+# :shield: NetSecTools :shield:
 
 <img src="https://raw.githubusercontent.com/nfline/pythonProject/assets/netsectools-banner.png" alt="NetSecTools Banner" width="850px">
 
@@ -14,31 +14,31 @@
 
 <div align="center">
 
-[Overview](#overview) •
-[Features](#key-features) •
-[Structure](#project-structure) •
-[Installation](#installation) •
-[Usage](#usage-examples) •
-[Modules](#modules) •
-[Security](#security-notes) •
-[Compatibility](#compatibility) •
-[License](#license)
+[:clipboard: Overview](#clipboard-overview) •
+[:sparkles: Features](#sparkles-key-features) •
+[:file_folder: Structure](#file_folder-project-structure) •
+[:wrench: Installation](#wrench-installation) •
+[:rocket: Usage](#rocket-usage-examples) •
+[:puzzle_piece: Modules](#puzzle_piece-modules) •
+[:lock: Security](#lock-security-notes) •
+[:chart_with_upwards_trend: Compatibility](#chart_with_upwards_trend-compatibility) •
+[:scroll: License](#scroll-license)
 
 </div>
 
 ---
 
-## Overview
+## :clipboard: Overview
 
 NetSecTools is a comprehensive collection of Python tools designed for network engineers, security professionals, and IT administrators. The toolkit provides solutions for network monitoring, security assessment, and automation tasks, helping you efficiently manage and secure your network infrastructure.
 
 <div align="center">
 <table>
 <tr>
-<td align="center"><b>Monitoring</b></td>
-<td align="center"><b>Security</b></td>
-<td align="center"><b>Automation</b></td>
-<td align="center"><b>Cloud</b></td>
+<td align="center"><b>:mag: Monitoring</b></td>
+<td align="center"><b>:closed_lock_with_key: Security</b></td>
+<td align="center"><b>:gear: Automation</b></td>
+<td align="center"><b>:cloud: Cloud</b></td>
 </tr>
 <tr>
 <td>
@@ -67,32 +67,32 @@ NetSecTools is a comprehensive collection of Python tools designed for network e
 
 ---
 
-## Key Features
+## :sparkles: Key Features
 
-<div class="features-grid">
+<div>
 
-- **Integrated Monitoring** – Connect ThousandEyes with Azure for comprehensive network visibility
-- **Security Assessment** – Leverage Shodan for external attack surface mapping
-- **Automation Tools** – Streamline repetitive tasks and improve operational efficiency
-- **Network Analysis** – Utilize ExtraHop for deep packet inspection and analytics
-- **WAF Management** – Configure and monitor web application firewalls
-- **Cloud Integration** – Azure-focused tools for cloud resource management and analysis
-- **Utility Scripts** – Solve common networking challenges with purpose-built tools
+- **:arrows_counterclockwise: Integrated Monitoring** – Connect ThousandEyes with Azure for comprehensive network visibility
+- **:shield: Security Assessment** – Leverage Shodan for external attack surface mapping
+- **:robot: Automation Tools** – Streamline repetitive tasks and improve operational efficiency
+- **:bar_chart: Network Analysis** – Utilize ExtraHop for deep packet inspection and analytics
+- **:broom: WAF Management** – Configure and monitor web application firewalls
+- **:cloud: Cloud Integration** – Azure-focused tools for cloud resource management and analysis
+- **:wrench: Utility Scripts** – Solve common networking challenges with purpose-built tools
 
 </div>
 
 ---
 
-## Project Structure
+## :file_folder: Project Structure
 
 ```
 netsectools/
 │
-├── monitoring/           # Network monitoring tools
+├── :mag: monitoring/           # Network monitoring tools
 │   ├── 1000eyes_sync_azure.py   # ThousandEyes data synchronization
 │   └── search_host.py           # Host discovery and tracking
 │
-├── security/             # Security assessment tools
+├── :closed_lock_with_key: security/             # Security assessment tools
 │   ├── extrahop/              # Network traffic analysis
 │   │   ├── device-group.py      # Device grouping functionality
 │   │   ├── tag.py               # ExtraHop tagging system
@@ -108,15 +108,15 @@ netsectools/
 │       ├── get_ip_protection.py       # IP protection settings
 │       └── update_endpoint_*.py       # Endpoint management tools
 │
-├── automation/           # Task automation utilities
+├── :gear: automation/           # Task automation utilities
 │   ├── active_mouse.py         # Prevent system timeouts
 │   └── random_ip.py            # Generate random IP addresses
 │
-├── Azure/                # Azure cloud integration
+├── :cloud: Azure/                # Azure cloud integration
 │   ├── azure_traffic_analyzer.py   # Traffic analysis for Azure
 │   └── README.md                   # Azure module documentation
 │
-└── tools/                # General utility scripts
+└── :toolbox: tools/                # General utility scripts
     ├── gethostname.py          # Hostname resolution utility
     ├── splunk_search           # Splunk query tools
     └── url_validator.py        # URL validation and testing
@@ -124,9 +124,7 @@ netsectools/
 
 ---
 
-## Installation
-
-<div class="code-container">
+## :wrench: Installation
 
 ```bash
 # Clone the repository
@@ -145,15 +143,12 @@ cp .env.example .env
 # Edit .env with your API keys and configuration
 ```
 
-</div>
-
 ---
 
-## Usage Examples
+## :rocket: Usage Examples
 
 <details open>
 <summary><b>ThousandEyes Azure Synchronization</b></summary>
-<div class="example-container">
 
 ```python
 # Set required environment variables
@@ -163,135 +158,108 @@ export AZURE_STORAGE_CONNECTION_STRING="your_connection_string"
 # Run the synchronization
 python monitoring/1000eyes_sync_azure.py
 ```
-</div>
 </details>
 
 <details>
 <summary><b>Shodan Host Search</b></summary>
-<div class="example-container">
 
 ```python
 # Create an Excel file with IP addresses in the first column
 # Run the script to fetch host information
 python security/shodan/search_host.py
 ```
-</div>
 </details>
 
 <details>
 <summary><b>WAF Management</b></summary>
-<div class="example-container">
 
 ```python
 # Configure your WAF credentials in .env
 python security/waf/get_application_list.py
 ```
-</div>
 </details>
 
 <details>
 <summary><b>Azure Traffic Analysis</b></summary>
-<div class="example-container">
 
 ```python
 # Ensure Azure credentials are configured
 python Azure/azure_traffic_analyzer.py
 ```
-</div>
 </details>
 
 <details>
 <summary><b>URL Validation</b></summary>
-<div class="example-container">
 
 ```python
 # Prepare Excel file with URLs in a column named 'URL'
 python tools/url_validator.py
 ```
-</div>
 </details>
 
 ---
 
-## Modules
-
-<div class="modules-container">
+## :puzzle_piece: Modules
 
 <details open>
-<summary><b>Monitoring Module</b></summary>
-<div class="module-details">
+<summary><b>:mag: Monitoring Module</b></summary>
 
 Tools for network monitoring and performance tracking:
 
 - **ThousandEyes Integration**: Synchronize monitoring data with Azure
 - **Host Search**: Find and track network assets
-</div>
 </details>
 
 <details>
-<summary><b>Security Module</b></summary>
-<div class="module-details">
+<summary><b>:closed_lock_with_key: Security Module</b></summary>
 
 Tools for security assessment and threat detection:
 
 - **Shodan Integration**: External attack surface mapping
 - **ExtraHop Analysis**: Network traffic inspection
 - **WAF Management**: Web application firewall configuration
-</div>
 </details>
 
 <details>
-<summary><b>Automation Module</b></summary>
-<div class="module-details">
+<summary><b>:gear: Automation Module</b></summary>
 
 Tools to automate routine tasks:
 
 - **Mouse Activity**: Prevent system timeouts
 - **IP Generation**: Create IP addresses for testing
-</div>
 </details>
 
 <details>
-<summary><b>Azure Module</b></summary>
-<div class="module-details">
+<summary><b>:cloud: Azure Module</b></summary>
 
 Tools for Azure cloud management:
 
 - **Traffic Analyzer**: Monitor and analyze Azure network traffic
 - **Resource Management**: Track and optimize Azure resources
-</div>
 </details>
 
 <details>
-<summary><b>Utility Tools</b></summary>
-<div class="module-details">
+<summary><b>:toolbox: Utility Tools</b></summary>
 
 General-purpose network utilities:
 
 - **URL Validator**: Check URL accessibility
 - **Hostname Resolver**: DNS and hostname utilities
 - **Splunk Integration**: Query and analyze Splunk data
-</div>
 </details>
 
-</div>
+---
+
+## :lock: Security Notes
+
+- :key: Store API keys and credentials as environment variables
+- :eyes: Review code before executing in production environments
+- :closed_lock_with_key: Follow the principle of least privilege when configuring API access
+- :arrows_counterclockwise: Regularly update dependencies to patch security vulnerabilities
 
 ---
 
-## Security Notes
-
-<div class="security-container">
-
-- Store API keys and credentials as environment variables
-- Review code before executing in production environments
-- Follow the principle of least privilege when configuring API access
-- Regularly update dependencies to patch security vulnerabilities
-
-</div>
-
----
-
-## Compatibility
+## :chart_with_upwards_trend: Compatibility
 
 - Python 3.8 or higher
 - Windows, macOS, and Linux compatible
@@ -299,13 +267,13 @@ General-purpose network utilities:
 
 ---
 
-## License
+## :scroll: License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ---
 
-## Author
+## :bust_in_silhouette: Author
 
 <div align="center">
 
@@ -324,31 +292,3 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 If you find this toolkit useful, please consider giving it a star ⭐
 
 </div>
-
-<style>
-.features-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-  gap: 10px;
-}
-.code-container, .example-container, .module-details, .security-container {
-  background-color: #f8f8f8;
-  border-radius: 5px;
-  padding: 15px;
-  margin: 10px 0;
-}
-.modules-container {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-  gap: 15px;
-}
-details {
-  margin-bottom: 15px;
-}
-summary {
-  cursor: pointer;
-  padding: 8px;
-  background-color: #f0f0f0;
-  border-radius: 5px;
-}
-</style>
