@@ -1,22 +1,39 @@
 # Azure IP流量分析工具
 
 ## 概述
-`query_ip_azure.sh`是一个强大的Shell脚本工具，用于全面分析Azure环境中特定IP地址的网络流量。该工具自动发现相关资源、网络安全组和流日志配置，并使用KQL查询从Log Analytics工作区中提取详细的流量数据。脚本采用Azure CLI和Azure Resource Graph实现高效的资源发现和查询。
+本工具提供两个版本的脚本，用于全面分析Azure环境中特定IP地址的网络流量：
+- `query_ip_azure_improved.sh` (Bash脚本) - 改进版本
+- `query_ip_azure.py` (Python脚本) - 适用于无法运行Bash的环境
+
+这些脚本采用高效的查询策略，**先定位IP相关资源和NSG，再查询关联的Log Analytics工作区**，避免遍历所有订阅和工作区，大幅提高执行效率。
 
 ## 前提条件
+### Bash脚本版本
 - Azure CLI (最新版本)
 - jq (JSON处理工具)
 - bash环境 (Linux/macOS/Windows WSL)
+
+### Python脚本版本
+- Python 3.6+
+- Azure SDK for Python
+  - azure-identity
+  - azure-mgmt-resource
+  - azure-mgmt-network
+  - azure-mgmt-monitor
+  - azure-mgmt-loganalytics
+
+### 共同要求
 - 对Azure订阅的适当访问权限
   - 至少需要"读取者"角色
   - 对Log Analytics工作区的查询权限
   - 对Azure Resource Graph的查询权限
 
 ## 安装步骤
+### Bash脚本版本
 1. 下载脚本到本地目录
 2. 赋予脚本执行权限
    ```bash
-   chmod +x query_ip_azure.sh
+   chmod +x query_ip_azure_improved.sh
    ```
 3. 确保已安装依赖工具
    ```bash
@@ -29,98 +46,116 @@
    # 安装jq (macOS)
    brew install jq
    ```
-4. 确认Azure CLI已安装并已登录
+
+### Python脚本版本
+1. 安装所需Python包
    ```bash
-   # 检查Azure CLI安装
-   az --version
-   
-   # 登录Azure
-   az login
+   pip install azure-identity azure-mgmt-resource azure-mgmt-network azure-mgmt-monitor azure-mgmt-loganalytics
    ```
 
 ## 使用方法
-基本用法:
+### Bash脚本
 ```bash
-./query_ip_azure.sh <IP地址> [天数]
+./query_ip_azure_improved.sh <IP地址> [天数]
+```
+
+### Python脚本
+```bash
+python query_ip_azure.py <IP地址> [天数]
 ```
 
 示例:
 ```bash
 # 查询特定IP过去30天的流量日志(默认)
-./query_ip_azure.sh 10.10.10.10
+./query_ip_azure_improved.sh 10.10.10.10
 
-# 查询特定IP过去60天的流量日志
-./query_ip_azure.sh 10.10.10.10 60
+# 使用Python版本查询过去60天的流量日志
+python query_ip_azure.py 10.10.10.10 60
 ```
 
-## 功能详解
+## Windows环境中的运行方法
+在Windows系统中运行这些脚本有以下几种方式：
 
-### 1. 全面的资源发现
-- 自动检查所有可用的Azure订阅
-- 发现所有Log Analytics工作区
-- 检查Network Watcher状态
-- 识别与目标IP相关的NSG和流日志配置
+### 运行Bash脚本
+1. **使用Windows Subsystem for Linux (WSL)**
+   ```powershell
+   # 打开WSL
+   wsl
+   
+   # 导航到脚本目录
+   cd /mnt/c/Users/wufei/python/pythonProject/azure/queryreport/
+   
+   # 运行脚本
+   ./query_ip_azure_improved.sh <IP地址> [天数]
+   ```
 
-### 2. 多维度数据收集
-- 从所有相关工作区收集网络流量数据
-- 查询与目标IP相关的安全事件
-- 收集流量统计和分析数据
-- 支持内部IP和外部IP地址
+2. **使用Git Bash**
+   如果已安装Git for Windows，可以使用Git Bash运行脚本。
 
-### 3. 深度分析功能
-- 流量方向分析(入站/出站)
-- 协议和端口使用情况统计
-- 对端IP地址分析
-- 时间序列流量模式识别
-- 安全事件关联分析
+3. **使用Docker**
+   ```powershell
+   docker run -it --rm -v C:\Users\wufei\python\pythonProject\azure\queryreport:/data ubuntu:latest bash -c "apt update && apt install -y jq curl && curl -sL https://aka.ms/InstallAzureCLIDeb | bash && cd /data && chmod +x query_ip_azure_improved.sh && ./query_ip_azure_improved.sh <IP地址> [天数]"
+   ```
 
-### 4. 资源关联分析
-- 使用Azure Resource Graph识别与IP相关的网络接口
-- 自动发现关联的虚拟机和公共IP地址
-- 分析与IP相关的NSG规则
-- 收集虚拟机详细信息(操作系统类型、名称等)
+### 运行Python脚本
+直接在Windows PowerShell或命令提示符中运行：
+```powershell
+python C:\Users\wufei\python\pythonProject\azure\queryreport\query_ip_azure.py <IP地址> [天数]
+```
+
+## 工作流程
+改进版脚本采用以下流程：
+
+1. **资源发现阶段**
+   - 先使用Azure Resource Graph查找与目标IP关联的网络接口
+   - 如果没有直接相关资源，则查找包含该IP的NSG规则
+   - 获取相关NSG的流日志配置
+
+2. **数据收集阶段**
+   - 仅查询相关NSG对应的Log Analytics工作区
+   - 执行网络流量、安全事件和统计分析查询
+
+3. **报告生成阶段**
+   - 合并所有查询结果
+   - 生成汇总CSV文件
 
 ## 输出说明
-脚本执行后会创建一个输出目录，格式为`ip_traffic_<IP地址>_<时间戳>`，包含以下文件:
+脚本执行后会创建一个输出目录，格式为`ip_traffic_<IP地址>_<时间戳>`，包含以下文件：
 
-- `subscriptions.json`: 所有可用订阅信息
-- `workspaces.json`: 发现的Log Analytics工作区
-- `network_watchers.json`: Network Watcher状态
-- `flow_logs.json`: 已启用的NSG流日志配置
-- `network_<工作区名称>.json`: 网络流量数据
-- `network_<工作区名称>.csv`: 网络流量CSV格式
-- `security_<工作区名称>.json`: 安全事件数据
-- `ip_stats_<工作区名称>.json`: IP统计分析
-- `ip_stats_<工作区名称>.csv`: IP统计CSV格式
-- `related_resources.json`: 与IP相关的网络接口资源
-- `related_resources.csv`: 网络接口资源CSV格式
-- `related_vms.json`: 关联的虚拟机详细信息
-- `related_nsg_rules.json`: 包含目标IP的NSG规则
+- `associated_resources.json`: 与IP直接关联的资源
+- `related_nsg_rules.json`: 包含该IP的NSG规则
+- `flow_logs.json`: 相关NSG的流日志配置
+- `target_workspaces.json`: 需要查询的目标工作区
+- `network_traffic_*.json`: 网络流量数据
+- `network_traffic_*.csv`: 网络流量CSV格式
+- `security_events_*.json`: 安全事件数据
+- `ip_stats_*.json`: IP统计分析
+- `ip_stats_*.csv`: IP统计CSV格式
+- `all_network_traffic.csv`: 汇总的网络流量数据
+
+## 改进的优势
+1. **更高效的查询策略**
+   - 不再遍历所有订阅和工作区
+   - 只查询与目标IP相关的资源和日志
+   - 执行时间从数小时缩短到几分钟
+
+2. **更精准的结果**
+   - 减少了无关数据
+   - 结果更加聚焦于目标IP
+
+3. **减少权限问题**
+   - 避免尝试访问无权限的订阅
+   - 减少因权限不足导致的错误
 
 ## 故障排除
 - **Azure登录失败**: 确保您有权访问目标订阅，可能需要重新登录
 - **未找到流量数据**: 检查目标IP是否正确，以及是否已配置NSG流日志
 - **jq命令错误**: 确保已安装jq工具
-- **权限不足**: 确保您拥有查询Log Analytics工作区和Azure Resource Graph的权限
-- **查询超时**: 对于大型环境，可能需要增加查询超时时间
-- **Resource Graph查询失败**: 确认Azure CLI有权限使用Azure Resource Graph
+- **Python依赖错误**: 确保已安装所有必要的Python包
 
-## 技术实现细节
-- 发现阶段使用Azure CLI和Azure Resource Graph
-- 查询阶段使用优化的KQL查询从Traffic Analytics中提取数据
-- 资源关联分析使用Azure Resource Graph高效查询
-- 分析阶段执行多维度统计分析
-- 脚本使用颜色编码输出，提高可读性
-- 实现了查询重试机制，提高可靠性
-
-## 关键优势
-- 完全基于Azure CLI，无需额外API权限
-- 利用Azure Resource Graph实现高效资源发现
-- 跨平台兼容(Linux/macOS/Windows WSL)
-- 全自动发现和分析流程
-- 多订阅和多工作区支持
-- 丰富的数据输出和分析结果
+## 流程图
+在`mermid.md`文件中提供了完整的流程图，展示了改进版脚本的工作流程。
 
 ---
 
-*注意: 此脚本需要在已安装Azure CLI并登录的环境中运行。对于大型Azure环境，初次运行可能需要较长时间来发现所有资源。*
+*注意: 这些脚本仅用于查询，不会修改Azure环境中的任何配置。*
