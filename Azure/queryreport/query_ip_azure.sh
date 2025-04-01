@@ -266,7 +266,6 @@ for WORKSPACE_INDEX in $(seq 0 $(($(jq '. | length' "$OUTPUT_DIR/workspaces.json
             TOTAL_RESULTS=$((TOTAL_RESULTS + NETWORK_COUNT))
             
             # 生成CSV
-            echo "正在生成CSV格式..."
             echo "TimeGenerated,NSGName,SrcIP,SrcPort,DestIP,DestPort,Protocol,Direction,Status,BytesSent,BytesReceived,VM,Subnet,WorkspaceName,SubscriptionName" > "$OUTPUT_DIR/network_traffic_${WORKSPACE_NAME}.csv"
             
             echo $NETWORK_RESULTS_WITH_INFO | jq -r '.[] | [
@@ -453,64 +452,103 @@ done
 
 echo -e "在所有工作区中共找到 ${GREEN}$TOTAL_RESULTS${NC} 条与IP $TARGET_IP 相关的记录"
 
-# 使用Microsoft Graph API查询网络流量日志
-echo -e "\n${BLUE}[7/7] 使用Microsoft Graph API查询网络流量日志...${NC}"
+# 使用Azure Resource Graph查询相关资源
+echo -e "\n${BLUE}[7/7] 使用Azure Resource Graph查询与IP相关的资源...${NC}"
 
-# 获取访问令牌
-echo "获取Microsoft Graph API访问令牌..."
-ACCESS_TOKEN=$(az account get-access-token --resource https://graph.microsoft.com --query accessToken -o tsv)
+# 构建查询
+echo "构建Azure Resource Graph查询..."
+ARG_QUERY="Resources 
+| where type =~ 'microsoft.network/networkinterfaces' 
+| where properties.ipConfigurations[0].properties.privateIPAddress =~ '$TARGET_IP' 
+  or properties.ipConfigurations[0].properties.publicIPAddress.id != '' 
+| extend publicIpId = tostring(properties.ipConfigurations[0].properties.publicIPAddress.id) 
+| join kind=leftouter (
+    Resources 
+    | where type =~ 'microsoft.network/publicipaddresses' 
+    | extend ipAddress = tostring(properties.ipAddress) 
+    | project id, ipAddress
+) on \$left.publicIpId == \$right.id 
+| where ipAddress =~ '$TARGET_IP' or properties.ipConfigurations[0].properties.privateIPAddress =~ '$TARGET_IP' 
+| extend vmId = tostring(properties.virtualMachine.id) 
+| project id, name, resourceGroup, subscriptionId, location, privateIp=properties.ipConfigurations[0].properties.privateIPAddress, publicIp=ipAddress, vmId"
 
-if [ -n "$ACCESS_TOKEN" ]; then
-    # 编码日期
-    START_DATE_ENCODED=$(echo $START_DATE | sed 's/:/\%3A/g')
-    END_DATE_ENCODED=$(echo $END_DATE | sed 's/:/\%3A/g')
+echo "执行Azure Resource Graph查询..."
+ARG_RESULTS=$(az graph query -q "$ARG_QUERY" --query "data" -o json)
+
+if [ $? -eq 0 ]; then
+    ARG_COUNT=$(echo $ARG_RESULTS | jq '. | length')
     
-    # 构建查询URL
-    GRAPH_URL="https://graph.microsoft.com/v1.0/security/networkTrafficLogs?\$filter=(sourceAddress eq '$TARGET_IP' or destinationAddress eq '$TARGET_IP') and createdDateTime ge $START_DATE_ENCODED and createdDateTime le $END_DATE_ENCODED&\$top=100"
-    
-    echo "执行Microsoft Graph API查询..."
-    GRAPH_RESULT=$(curl -s -X GET "$GRAPH_URL" \
-      -H "Authorization: Bearer $ACCESS_TOKEN" \
-      -H "Content-Type: application/json")
-    
-    # 检查是否有结果
-    GRAPH_VALUE=$(echo $GRAPH_RESULT | jq -r '.value')
-    if [ "$GRAPH_VALUE" != "null" ]; then
-        GRAPH_COUNT=$(echo $GRAPH_RESULT | jq '.value | length')
+    if [ "$ARG_COUNT" -gt "0" ]; then
+        echo -e "${GREEN}找到 $ARG_COUNT 个与IP $TARGET_IP 相关的网络资源${NC}"
         
-        if [ "$GRAPH_COUNT" -gt "0" ]; then
-            echo -e "${GREEN}通过Graph API找到 $GRAPH_COUNT 条与IP $TARGET_IP 相关的流量记录${NC}"
+        # 保存结果
+        echo $ARG_RESULTS > "$OUTPUT_DIR/related_resources.json"
+        
+        # 生成CSV
+        echo "id,name,resourceGroup,subscriptionId,location,privateIp,publicIp,vmId" > "$OUTPUT_DIR/related_resources.csv"
+        
+        echo $ARG_RESULTS | jq -r '.[] | [
+            .id,
+            .name,
+            .resourceGroup,
+            .subscriptionId,
+            .location,
+            .privateIp,
+            .publicIp,
+            .vmId
+        ] | @csv' >> "$OUTPUT_DIR/related_resources.csv"
+        
+        # 查询相关VM信息
+        echo -e "\n查询相关虚拟机信息..."
+        VM_IDS=$(echo $ARG_RESULTS | jq -r '.[].vmId' | grep -v "null" | sort | uniq)
+        
+        if [ -n "$VM_IDS" ]; then
+            # 构建VM查询
+            VM_ID_LIST=$(echo $VM_IDS | tr '\n' ' ' | sed 's/ /", "/g')
+            VM_ID_LIST="\"$VM_ID_LIST\""
+            VM_QUERY="Resources 
+            | where type =~ 'microsoft.compute/virtualmachines' 
+            | where id in~ ($VM_ID_LIST) 
+            | extend osType = properties.storageProfile.osDisk.osType 
+            | extend osName = properties.extended.instanceView.osName 
+            | extend osVersion = properties.extended.instanceView.osVersion 
+            | extend computerName = properties.osProfile.computerName 
+            | project id, name, resourceGroup, subscriptionId, location, osType, osName, osVersion, computerName, tags"
             
-            # 保存结果
-            echo $GRAPH_RESULT > "$OUTPUT_DIR/graph_traffic_logs.json"
+            echo "执行虚拟机信息查询..."
+            VM_RESULTS=$(az graph query -q "$VM_QUERY" --query "data" -o json)
             
-            # 生成CSV
-            echo "createdDateTime,sourceAddress,sourcePort,destinationAddress,destinationPort,protocol,trafficDirection,action,bytesTransferred" > "$OUTPUT_DIR/graph_traffic_logs.csv"
-            
-            echo $GRAPH_RESULT | jq -r '.value[] | [
-                .createdDateTime, 
-                .sourceAddress, 
-                .sourcePort, 
-                .destinationAddress, 
-                .destinationPort, 
-                .protocol, 
-                .trafficDirection, 
-                .action,
-                .bytesTransferred
-            ] | @csv' >> "$OUTPUT_DIR/graph_traffic_logs.csv"
-            
-            # 更新总结果计数
-            TOTAL_RESULTS=$((TOTAL_RESULTS + GRAPH_COUNT))
+            if [ $? -eq 0 ] && [ "$(echo $VM_RESULTS | jq '. | length')" -gt "0" ]; then
+                echo -e "${GREEN}找到 $(echo $VM_RESULTS | jq '. | length') 台相关虚拟机${NC}"
+                echo $VM_RESULTS > "$OUTPUT_DIR/related_vms.json"
+            else
+                echo -e "${YELLOW}未找到相关虚拟机详细信息${NC}"
+            fi
         else
-            echo -e "${YELLOW}通过Graph API未找到与IP $TARGET_IP 相关的流量记录${NC}"
+            echo -e "${YELLOW}未找到相关虚拟机ID${NC}"
         fi
     else
-        echo -e "${YELLOW}Graph API查询失败或返回无效响应${NC}"
-        echo "API响应:"
-        echo $GRAPH_RESULT | jq .
+        echo -e "${YELLOW}未找到与IP $TARGET_IP 相关的直接网络资源${NC}"
+        
+        # 尝试查找通信过的相关资源
+        echo "尝试查找与目标IP $TARGET_IP 有通信记录的资源..."
+        COMM_QUERY="Resources 
+        | where type =~ 'microsoft.network/networksecuritygroups' 
+        | where properties.securityRules[*].properties.sourceAddressPrefix contains '$TARGET_IP' 
+           or properties.securityRules[*].properties.destinationAddressPrefix contains '$TARGET_IP' 
+        | project id, name, resourceGroup, subscriptionId, location, rules=properties.securityRules"
+        
+        COMM_RESULTS=$(az graph query -q "$COMM_QUERY" --query "data" -o json)
+        
+        if [ $? -eq 0 ] && [ "$(echo $COMM_RESULTS | jq '. | length')" -gt "0" ]; then
+            echo -e "${GREEN}找到 $(echo $COMM_RESULTS | jq '. | length') 个与IP $TARGET_IP 相关的NSG规则${NC}"
+            echo $COMM_RESULTS > "$OUTPUT_DIR/related_nsg_rules.json"
+        else
+            echo -e "${YELLOW}在NSG规则中也未找到目标IP $TARGET_IP${NC}"
+        fi
     fi
 else
-    echo -e "${YELLOW}无法获取Graph API访问令牌，跳过此步骤${NC}"
+    echo -e "${YELLOW}Azure Resource Graph查询失败${NC}"
 fi
 
 # 创建汇总报告
