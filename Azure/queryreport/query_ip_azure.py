@@ -120,6 +120,7 @@ class AzureIPTrafficAnalyzer:
         self.flow_logs = []
         self.target_workspaces = []
         self.all_network_traffic = []
+        self.subnet_nsg_ids = []
         
         print_info("=" * 60)
         print_success("Azure IP Traffic Analyzer (Python)")
@@ -208,8 +209,111 @@ class AzureIPTrafficAnalyzer:
             else:
                 print_warning(f"No resources directly associated with IP {self.target_ip} found")
             
-            # Find NSGs that reference this IP in their rules
-            print_info(f"\n[3/5] Finding NSGs that reference IP {self.target_ip} in their rules...")
+            # Find subnets that contain this IP address
+            print_info(f"\n[3a/5] Finding subnets that contain IP {self.target_ip}...")
+            
+            # Parse the IP address to determine subnet range
+            ip_parts = self.target_ip.split('.')
+            if len(ip_parts) != 4:
+                print_error(f"Invalid IP address format: {self.target_ip}")
+                return
+                
+            # Convert IP string to integer for subnet calculations
+            try:
+                ip_int = (int(ip_parts[0]) << 24) + (int(ip_parts[1]) << 16) + (int(ip_parts[2]) << 8) + int(ip_parts[3])
+            except ValueError:
+                print_error(f"Invalid IP address components: {self.target_ip}")
+                return
+            
+            # Query virtual networks and their subnets
+            query = f"""
+            Resources
+            | where type =~ 'microsoft.network/virtualnetworks'
+            | mv-expand subnet=properties.subnets
+            | project vnetName=name, vnetId=id, subnetName=subnet.name, 
+                     subnetPrefix=subnet.properties.addressPrefix,
+                     subnetId=subnet.id, 
+                     nsgId=subnet.properties.networkSecurityGroup.id,
+                     resourceGroup, subscriptionId, location
+            """
+            
+            request = QueryRequest(query=query, subscriptions=[self.subscription_id])
+            response = graph_client.resources(request)
+            
+            # Function to check if IP is in subnet
+            def ip_in_subnet(ip_addr: str, subnet_prefix: str) -> bool:
+                try:
+                    # Parse subnet prefix (e.g., "10.0.0.0/24")
+                    subnet_addr, subnet_mask = subnet_prefix.split('/')
+                    subnet_mask = int(subnet_mask)
+                    
+                    # Parse subnet address
+                    subnet_parts = subnet_addr.split('.')
+                    if len(subnet_parts) != 4:
+                        return False
+                        
+                    # Convert subnet to integer
+                    subnet_int = (int(subnet_parts[0]) << 24) + (int(subnet_parts[1]) << 16) + \
+                                 (int(subnet_parts[2]) << 8) + int(subnet_parts[3])
+                                 
+                    # Calculate mask
+                    mask_int = (0xFFFFFFFF << (32 - subnet_mask)) & 0xFFFFFFFF
+                    
+                    # Check if IP is in subnet
+                    return (ip_int & mask_int) == (subnet_int & mask_int)
+                except (ValueError, IndexError):
+                    return False
+            
+            # Process subnets
+            matching_subnets = []
+            
+            if response.data:
+                all_subnets = response.data
+                save_json(all_subnets, os.path.join(self.output_dir, "all_subnets.json"))
+                
+                # Find subnets that contain this IP
+                for subnet in all_subnets:
+                    subnet_prefix = subnet.get('subnetPrefix')
+                    
+                    # Handle case where subnet prefix is an array
+                    if isinstance(subnet_prefix, list):
+                        for prefix in subnet_prefix:
+                            if ip_in_subnet(self.target_ip, prefix):
+                                matching_subnets.append(subnet)
+                                break
+                    else:
+                        if ip_in_subnet(self.target_ip, subnet_prefix):
+                            matching_subnets.append(subnet)
+                
+                # Save matching subnets
+                if matching_subnets:
+                    save_json(matching_subnets, os.path.join(self.output_dir, "matching_subnets.json"))
+                    print_success(f"Found {len(matching_subnets)} subnets that contain IP {self.target_ip}")
+                    
+                    # Generate CSV for matching subnets
+                    headers = ["vnetName", "subnetName", "subnetPrefix", "subnetId", "nsgId", "resourceGroup"]
+                    save_csv(matching_subnets, 
+                             os.path.join(self.output_dir, "matching_subnets.csv"),
+                             headers)
+                    
+                    # Extract NSG IDs from matching subnets
+                    nsg_ids = []
+                    for subnet in matching_subnets:
+                        nsg_id = subnet.get('nsgId')
+                        if nsg_id and nsg_id not in nsg_ids:
+                            nsg_ids.append(nsg_id)
+                    
+                    if nsg_ids:
+                        print_success(f"Found {len(nsg_ids)} NSGs associated with subnets containing this IP")
+                        # Store for later use in find_flow_logs
+                        self.subnet_nsg_ids = nsg_ids
+                else:
+                    print_warning(f"No subnets found that contain IP {self.target_ip}")
+            else:
+                print_warning("No virtual networks found in the subscription")
+            
+            # Find NSGs that reference this IP in their rules (as additional check)
+            print_info(f"\n[3b/5] Finding NSGs that reference IP {self.target_ip} in their rules...")
             
             query = f"""
             Resources
@@ -231,7 +335,7 @@ class AzureIPTrafficAnalyzer:
             
         except Exception as e:
             print_error(f"Error finding resources: {str(e)}")
-
+            
     def find_flow_logs(self) -> None:
         """Find NSG flow logs for relevant NSGs."""
         print_info(f"\n[3/5] Finding NSG flow logs...")
@@ -249,6 +353,11 @@ class AzureIPTrafficAnalyzer:
         for nsg in self.related_nsg_rules:
             nsg_id = nsg.get('id')
             if nsg_id and nsg_id not in nsg_ids:
+                nsg_ids.append(nsg_id)
+                
+        # Add NSGs from subnets
+        for nsg_id in self.subnet_nsg_ids:
+            if nsg_id not in nsg_ids:
                 nsg_ids.append(nsg_id)
                 
         if not nsg_ids:

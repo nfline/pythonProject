@@ -72,45 +72,132 @@ RESOURCE_COUNT=$(echo $IP_RESOURCES | jq '. | length')
 if [ "$RESOURCE_COUNT" -gt "0" ]; then
     echo -e "${GREEN}Found $RESOURCE_COUNT resources with IP $TARGET_IP${NC}"
     
-    # Generate CSV
+    # Create CSV from JSON for resources
     echo "id,name,resourceGroup,subscriptionId,location,nsgId" > "$OUTPUT_DIR/associated_resources.csv"
     echo $IP_RESOURCES | jq -r '.[] | [.id, .name, .resourceGroup, .subscriptionId, .location, .nsgId] | @csv' >> "$OUTPUT_DIR/associated_resources.csv"
+    echo "Saved resource details to $OUTPUT_DIR/associated_resources.csv"
 else
     echo -e "${YELLOW}No resources directly associated with IP $TARGET_IP found${NC}"
 fi
 
-# Step 3: Find NSGs that reference this IP in their rules
-echo -e "\n${BLUE}[3/5] Finding NSGs that reference IP ${TARGET_IP} in their rules...${NC}"
+# Step 3a: Find subnets that contain this IP
+echo -e "\n${BLUE}[3a/5] Finding subnets that contain IP ${TARGET_IP}...${NC}"
 
-NSG_RULES_QUERY="Resources 
-| where type =~ 'microsoft.network/networksecuritygroups' 
-| where properties.securityRules[*].properties.sourceAddressPrefix contains '$TARGET_IP' 
-   or properties.securityRules[*].properties.destinationAddressPrefix contains '$TARGET_IP' 
-| project id, name, resourceGroup, subscriptionId, location, rules=properties.securityRules"
+# Parse the IP address to components for subnet calculation
+IFS='.' read -r -a IP_PARTS <<< "$TARGET_IP"
+if [ ${#IP_PARTS[@]} -ne 4 ]; then
+    echo -e "${RED}Invalid IP address format: $TARGET_IP${NC}"
+fi
 
-NSG_RULES=$(az graph query -q "$NSG_RULES_QUERY" --query "data" -o json)
-echo $NSG_RULES > "$OUTPUT_DIR/related_nsg_rules.json"
+# Query for virtual networks and their subnets
+echo "Searching for subnets that may contain IP $TARGET_IP..."
+SUBNET_QUERY=$(az graph query -q "Resources 
+| where type =~ 'microsoft.network/virtualnetworks' 
+| mv-expand subnet=properties.subnets 
+| project vnetName=name, vnetId=id, subnetName=subnet.name, subnetPrefix=subnet.properties.addressPrefix, 
+          subnetId=subnet.id, nsgId=subnet.properties.networkSecurityGroup.id, 
+          resourceGroup, subscriptionId, location" --query "data" -o json)
 
-NSG_RULES_COUNT=$(echo $NSG_RULES | jq '. | length')
-if [ "$NSG_RULES_COUNT" -gt "0" ]; then
-    echo -e "${GREEN}Found $NSG_RULES_COUNT NSGs with rules referencing IP $TARGET_IP${NC}"
+echo $SUBNET_QUERY > "$OUTPUT_DIR/all_subnets.json"
+
+# Function to check if IP is in subnet
+function ip_in_subnet {
+    local ip=$1
+    local subnet=$2
     
-    # Extract NSG IDs from rules
-    NSG_RULE_IDS=$(echo $NSG_RULES | jq -r '.[].id')
+    # Extract subnet address and mask
+    IFS='/' read -r subnet_addr subnet_mask <<< "$subnet"
+    IFS='.' read -r -a subnet_parts <<< "$subnet_addr"
     
-    # Combine with direct NSG IDs
-    if [ -n "$NSG_RULE_IDS" ]; then
-        if [ -n "$NSG_IDS" ]; then
-            NSG_IDS=$(echo -e "$NSG_IDS\n$NSG_RULE_IDS" | sort | uniq)
-        else
-            NSG_IDS=$NSG_RULE_IDS
+    # Convert IP and subnet to integers
+    local ip_int=$(( (${IP_PARTS[0]} << 24) + (${IP_PARTS[1]} << 16) + (${IP_PARTS[2]} << 8) + ${IP_PARTS[3]} ))
+    local subnet_int=$(( (${subnet_parts[0]} << 24) + (${subnet_parts[1]} << 16) + (${subnet_parts[2]} << 8) + ${subnet_parts[3]} ))
+    
+    # Calculate subnet mask in integer form
+    local mask_int=$(( 0xFFFFFFFF << (32 - $subnet_mask) & 0xFFFFFFFF ))
+    
+    # Check if IP is in subnet
+    if [ $(( $ip_int & $mask_int )) -eq $(( $subnet_int & $mask_int )) ]; then
+        return 0  # True
+    else
+        return 1  # False
+    fi
+}
+
+# Find matching subnets
+MATCHING_SUBNETS="[]"
+for row in $(echo $SUBNET_QUERY | jq -c '.[]'); do
+    subnet_prefix=$(echo $row | jq -r '.subnetPrefix')
+    
+    # Handle multiple prefixes array if present
+    if [[ $subnet_prefix == \[* ]]; then
+        for prefix in $(echo $subnet_prefix | jq -r '.[]'); do
+            if ip_in_subnet "$TARGET_IP" "$prefix"; then
+                MATCHING_SUBNETS=$(echo $MATCHING_SUBNETS | jq ". + [$row]")
+                break
+            fi
+        done
+    else
+        if ip_in_subnet "$TARGET_IP" "$subnet_prefix"; then
+            MATCHING_SUBNETS=$(echo $MATCHING_SUBNETS | jq ". + [$row]")
         fi
+    fi
+done
+
+echo $MATCHING_SUBNETS > "$OUTPUT_DIR/matching_subnets.json"
+SUBNET_COUNT=$(echo $MATCHING_SUBNETS | jq '. | length')
+
+# Extract NSG IDs from matching subnets
+if [ "$SUBNET_COUNT" -gt "0" ]; then
+    echo -e "${GREEN}Found $SUBNET_COUNT subnets that contain IP $TARGET_IP${NC}"
+    
+    # Add NSG IDs from subnets
+    SUBNET_NSG_IDS=$(echo $MATCHING_SUBNETS | jq -r '.[].nsgId' | grep -v "null")
+    if [ ! -z "$SUBNET_NSG_IDS" ]; then
+        NSG_IDS=$(echo -e "$NSG_IDS\n$SUBNET_NSG_IDS" | sort | uniq)
+        echo -e "${GREEN}Found additional NSGs associated with subnets containing this IP${NC}"
+    fi
+    
+    # Create CSV from JSON for subnets
+    echo "vnetName,subnetName,subnetPrefix,subnetId,nsgId,resourceGroup" > "$OUTPUT_DIR/matching_subnets.csv"
+    echo $MATCHING_SUBNETS | jq -r '.[] | [.vnetName, .subnetName, .subnetPrefix, .subnetId, .nsgId, .resourceGroup] | @csv' >> "$OUTPUT_DIR/matching_subnets.csv"
+    echo "Saved subnet details to $OUTPUT_DIR/matching_subnets.csv"
+else
+    echo -e "${YELLOW}No subnets found that contain IP $TARGET_IP${NC}"
+fi
+
+# Step 3b: Find NSGs that reference the IP in their rules (as additional check)
+echo -e "\n${BLUE}[3b/5] Finding NSGs that reference IP ${TARGET_IP} in their rules...${NC}"
+
+NSG_RULES_QUERY=$(az graph query -q "Resources | where type =~ 'microsoft.network/networksecuritygroups' | where properties.securityRules[*].properties.sourceAddressPrefix contains '$TARGET_IP' or properties.securityRules[*].properties.destinationAddressPrefix contains '$TARGET_IP' | project id, name, resourceGroup, subscriptionId, location, rules=properties.securityRules" --query "data" -o json)
+
+echo $NSG_RULES_QUERY > "$OUTPUT_DIR/related_nsg_rules.json"
+RULES_COUNT=$(echo $NSG_RULES_QUERY | jq '. | length')
+
+if [ "$RULES_COUNT" -gt "0" ]; then
+    echo -e "${GREEN}Found $RULES_COUNT NSGs with rules referencing IP $TARGET_IP${NC}"
+    
+    # Extract NSG IDs from rules query
+    RULES_NSG_IDS=$(echo $NSG_RULES_QUERY | jq -r '.[].id')
+    if [ ! -z "$RULES_NSG_IDS" ]; then
+        NSG_IDS=$(echo -e "$NSG_IDS\n$RULES_NSG_IDS" | sort | uniq)
     fi
 else
     echo -e "${YELLOW}No NSGs found with rules referencing IP $TARGET_IP${NC}"
 fi
 
-# Step 4: Find flow logs for identified NSGs
+# Save unique NSG IDs
+echo "$NSG_IDS" | grep -v '^$' > "$OUTPUT_DIR/nsg_ids.txt"
+NSG_COUNT=$(echo "$NSG_IDS" | grep -v '^$' | wc -l)
+
+if [ "$NSG_COUNT" -gt "0" ]; then
+    echo -e "${GREEN}Found a total of $NSG_COUNT unique NSGs related to IP $TARGET_IP${NC}"
+else
+    echo -e "${YELLOW}No NSGs found related to IP $TARGET_IP${NC}"
+    # Continue anyway as there might be other analytics available
+fi
+
+# Step 4: Find NSG flow logs
 echo -e "\n${BLUE}[4/5] Finding flow logs for identified NSGs...${NC}"
 
 # Initialize workspace tracking files
