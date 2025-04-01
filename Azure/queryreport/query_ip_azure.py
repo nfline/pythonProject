@@ -144,91 +144,90 @@ class AzureIPTrafficAnalyzer:
         print_info("\n[1/5] Checking Azure login status...")
         
         try:
-            # First try DefaultAzureCredential which supports multiple auth methods
-            print("Attempting to authenticate with DefaultAzureCredential...")
-            try:
-                self.credential = DefaultAzureCredential()
-                
-                # Test if credential is valid by attempting to list subscriptions
-                from azure.mgmt.subscription import SubscriptionClient
-                subscription_client = SubscriptionClient(self.credential)
-                subscriptions = list(subscription_client.subscriptions.list())
-                
-                if subscriptions:
-                    self.subscription_id = subscriptions[0].subscription_id
-                    print_success(f"Successfully authenticated with Azure using DefaultAzureCredential")
-                    print(f"Current Subscription: {Colors.YELLOW}{self.subscription_id}{Colors.RESET}")
-                    
-                    # Initialize clients
-                    self.resource_client = ResourceManagementClient(self.credential, self.subscription_id)
-                    self.network_client = NetworkManagementClient(self.credential, self.subscription_id)
-                    self.monitor_client = MonitorManagementClient(self.credential, self.subscription_id)
-                    self.loganalytics_client = LogAnalyticsManagementClient(self.credential, self.subscription_id)
-                    
-                    return True
-            except Exception as e:
-                print_warning(f"DefaultAzureCredential authentication failed: {str(e)}")
-                print("Trying alternative authentication methods...")
+            # Use subprocess to call az commands directly, similar to the shell script
+            import subprocess
+            import json
             
-            # Try using Azure CLI authentication directly
-            print("Attempting to authenticate using Azure CLI...")
+            # Check if already logged in
             try:
-                from azure.cli.core import get_default_cli
+                # Run 'az account show' to check login status
+                result = subprocess.run(
+                    ["az", "account", "show", "--query", "id", "-o", "tsv"],
+                    capture_output=True,
+                    text=True,
+                    check=False
+                )
                 
-                # Check if logged in
-                cli = get_default_cli()
-                cli.invoke(['account', 'show'])
-                if cli.result.result:
-                    account_info = cli.result.result
-                    self.subscription_id = account_info.get('id')
+                if result.returncode == 0 and result.stdout.strip():
+                    self.subscription_id = result.stdout.strip()
+                    print_success(f"Already logged in to Azure")
                     
-                    # Use CLI credential
-                    self.credential = AzureCliCredential()
+                    # Get tenant ID
+                    tenant_result = subprocess.run(
+                        ["az", "account", "show", "--query", "tenantId", "-o", "tsv"],
+                        capture_output=True,
+                        text=True,
+                        check=False
+                    )
+                    tenant_id = tenant_result.stdout.strip() if tenant_result.returncode == 0 else "Unknown"
                     
-                    print_success(f"Successfully authenticated with Azure using Azure CLI")
                     print(f"Current Subscription: {Colors.YELLOW}{self.subscription_id}{Colors.RESET}")
-                    
-                    # Initialize clients
-                    self.resource_client = ResourceManagementClient(self.credential, self.subscription_id)
-                    self.network_client = NetworkManagementClient(self.credential, self.subscription_id)
-                    self.monitor_client = MonitorManagementClient(self.credential, self.subscription_id)
-                    self.loganalytics_client = LogAnalyticsManagementClient(self.credential, self.subscription_id)
-                    
-                    return True
+                    print(f"Current Tenant: {Colors.YELLOW}{tenant_id}{Colors.RESET}")
                 else:
-                    # Try to login
-                    print("Azure CLI not logged in. Attempting to login...")
-                    exit_code = cli.invoke(['login'])
-                    if exit_code == 0 and cli.result.result:
-                        account_info = cli.result.result
-                        self.subscription_id = account_info.get('id')
+                    print("Not logged in. Attempting to login to Azure...")
+                    # Run 'az login'
+                    login_result = subprocess.run(
+                        ["az", "login"],
+                        capture_output=True,
+                        text=True,
+                        check=False
+                    )
+                    
+                    if login_result.returncode != 0:
+                        print_error(f"Login failed: {login_result.stderr}")
+                        return False
+                    
+                    # Get subscription ID
+                    result = subprocess.run(
+                        ["az", "account", "show", "--query", "id", "-o", "tsv"],
+                        capture_output=True,
+                        text=True,
+                        check=False
+                    )
+                    
+                    if result.returncode == 0 and result.stdout.strip():
+                        self.subscription_id = result.stdout.strip()
                         
-                        # Use CLI credential
-                        self.credential = AzureCliCredential()
+                        # Get tenant ID
+                        tenant_result = subprocess.run(
+                            ["az", "account", "show", "--query", "tenantId", "-o", "tsv"],
+                            capture_output=True,
+                            text=True,
+                            check=False
+                        )
+                        tenant_id = tenant_result.stdout.strip() if tenant_result.returncode == 0 else "Unknown"
                         
-                        print_success(f"Successfully authenticated with Azure using Azure CLI")
+                        print_success(f"Successfully logged in to Azure")
                         print(f"Current Subscription: {Colors.YELLOW}{self.subscription_id}{Colors.RESET}")
-                        
-                        # Initialize clients
-                        self.resource_client = ResourceManagementClient(self.credential, self.subscription_id)
-                        self.network_client = NetworkManagementClient(self.credential, self.subscription_id)
-                        self.monitor_client = MonitorManagementClient(self.credential, self.subscription_id)
-                        self.loganalytics_client = LogAnalyticsManagementClient(self.credential, self.subscription_id)
-                        
-                        return True
-            except Exception as e:
-                print_warning(f"Azure CLI authentication failed: {str(e)}")
+                        print(f"Current Tenant: {Colors.YELLOW}{tenant_id}{Colors.RESET}")
+                    else:
+                        print_error("Failed to get subscription ID after login")
+                        return False
                 
-            print_error("All authentication methods failed")
-            print("Please try one of the following methods:")
-            print("1. Run 'az login' in a terminal to authenticate with Azure CLI")
-            print("2. Set the following environment variables for service principal:")
-            print("   - AZURE_TENANT_ID")
-            print("   - AZURE_CLIENT_ID")
-            print("   - AZURE_CLIENT_SECRET")
-            print("3. Use managed identity if running on Azure")
-            return False
-            
+                # Initialize Azure clients using AzureCliCredential
+                # This will directly use the CLI's login session
+                self.credential = AzureCliCredential()
+                self.resource_client = ResourceManagementClient(self.credential, self.subscription_id)
+                self.network_client = NetworkManagementClient(self.credential, self.subscription_id)
+                self.monitor_client = MonitorManagementClient(self.credential, self.subscription_id)
+                self.loganalytics_client = LogAnalyticsManagementClient(self.credential, self.subscription_id)
+                
+                return True
+                
+            except subprocess.SubprocessError as e:
+                print_error(f"Error executing Azure CLI command: {str(e)}")
+                return False
+                
         except Exception as e:
             print_error(f"Unexpected error during authentication: {str(e)}")
             return False
