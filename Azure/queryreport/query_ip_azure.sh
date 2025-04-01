@@ -1,143 +1,143 @@
 #!/bin/bash
-# query-ip-traffic.sh - 通过IP地址查询Azure网络流量日志
-# 使用方法: ./query-ip-traffic.sh <IP地址> [天数]
+# query_ip_azure.sh - Query Azure network traffic logs by IP address
+# Usage: ./query_ip_azure.sh <IP address> [days]
 
-# 颜色定义
+# Color definitions
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 BLUE='\033[0;34m'
-NC='\033[0m' # 无颜色
+NC='\033[0m' # No Color
 
-# 检查参数
+# Check parameters
 if [ -z "$1" ]; then
-    echo -e "${RED}错误: 请提供IP地址${NC}"
-    echo "使用方法: ./query-ip-traffic.sh <IP地址> [天数]"
+    echo -e "${RED}Error: Please provide an IP address${NC}"
+    echo "Usage: ./query_ip_azure.sh <IP address> [days]"
     exit 1
 fi
 
 TARGET_IP=$1
-DAYS_BACK=${2:-30} # 默认查询过去30天
+DAYS_BACK=${2:-30} # Default: query the last 30 days
 
-# 计算时间范围
+# Calculate time range
 START_DATE=$(date -d "$DAYS_BACK days ago" +%Y-%m-%dT%H:%M:%SZ)
 END_DATE=$(date +%Y-%m-%dT%H:%M:%SZ)
 DATE_TAG=$(date +%Y%m%d%H%M%S)
 OUTPUT_DIR="ip_traffic_${TARGET_IP//\./_}_${DATE_TAG}"
 
 echo -e "${BLUE}=====================================${NC}"
-echo -e "${GREEN}IP流量日志查询工具${NC}"
+echo -e "${GREEN}IP Traffic Log Query Tool${NC}"
 echo -e "${BLUE}=====================================${NC}"
-echo -e "目标IP: ${YELLOW}$TARGET_IP${NC}"
-echo -e "时间范围: ${YELLOW}$START_DATE${NC} 到 ${YELLOW}$END_DATE${NC}"
-echo -e "输出目录: ${YELLOW}$OUTPUT_DIR${NC}"
+echo -e "Target IP: ${YELLOW}$TARGET_IP${NC}"
+echo -e "Time Range: ${YELLOW}$START_DATE${NC} to ${YELLOW}$END_DATE${NC}"
+echo -e "Output Directory: ${YELLOW}$OUTPUT_DIR${NC}"
 echo -e "${BLUE}=====================================${NC}"
 
-# 创建输出目录
+# Create output directory
 mkdir -p $OUTPUT_DIR
-echo "已创建输出目录: $OUTPUT_DIR"
+echo "Created output directory: $OUTPUT_DIR"
 
-# 登录检查
-echo -e "\n${BLUE}[1/7] 检查Azure登录状态...${NC}"
+# Login check
+echo -e "\n${BLUE}[1/7] Checking Azure login status...${NC}"
 SUBSCRIPTION_CHECK=$(az account show 2>/dev/null)
 if [ $? -ne 0 ]; then
-    echo "您尚未登录Azure，正在启动登录流程..."
+    echo "You are not logged in to Azure. Starting login process..."
     az login
     if [ $? -ne 0 ]; then
-        echo -e "${RED}登录失败，请检查凭据后重试${NC}"
+        echo -e "${RED}Login failed. Please check your credentials and try again${NC}"
         exit 1
     fi
 fi
 
 SUBSCRIPTION_ID=$(az account show --query id -o tsv)
 TENANT_ID=$(az account show --query tenantId -o tsv)
-echo -e "当前订阅: ${YELLOW}$SUBSCRIPTION_ID${NC}"
-echo -e "当前租户: ${YELLOW}$TENANT_ID${NC}"
+echo -e "Current Subscription: ${YELLOW}$SUBSCRIPTION_ID${NC}"
+echo -e "Current Tenant: ${YELLOW}$TENANT_ID${NC}"
 
-# 保存所有订阅信息
-echo -e "\n${BLUE}[2/7] 获取所有可用订阅...${NC}"
+# Save all subscription information
+echo -e "\n${BLUE}[2/7] Getting all available subscriptions...${NC}"
 az account list --query "[].{name:name, id:id, isDefault:isDefault}" -o json > "$OUTPUT_DIR/subscriptions.json"
-echo "找到 $(jq '. | length' "$OUTPUT_DIR/subscriptions.json") 个订阅"
+echo "Found $(jq '. | length' "$OUTPUT_DIR/subscriptions.json") subscriptions"
 
-# 查找Log Analytics工作区
-echo -e "\n${BLUE}[3/7] 查找所有Log Analytics工作区...${NC}"
+# Find Log Analytics workspaces
+echo -e "\n${BLUE}[3/7] Finding all Log Analytics workspaces...${NC}"
 
-# 初始化工作区列表文件
+# Initialize workspace list file
 echo "[]" > "$OUTPUT_DIR/workspaces.json"
 
-# 遍历所有订阅查找工作区
+# Iterate through all subscriptions to find workspaces
 for SUB_ID in $(jq -r '.[].id' "$OUTPUT_DIR/subscriptions.json"); do
     SUB_NAME=$(jq -r '.[] | select(.id=="'$SUB_ID'") | .name' "$OUTPUT_DIR/subscriptions.json")
-    echo -e "检查订阅: ${YELLOW}$SUB_NAME${NC}"
+    echo -e "Checking subscription: ${YELLOW}$SUB_NAME${NC}"
     
-    # 切换订阅
+    # Switch subscription
     az account set --subscription $SUB_ID
     
-    # 获取当前订阅中的工作区
+    # Get workspaces in current subscription
     WORKSPACES=$(az monitor log-analytics workspace list --query "[].{name:name, resourceGroup:resourceGroup, id:id, location:location, customerId:customerId}" -o json)
     
-    # 合并到主工作区列表
+    # Merge to main workspace list
     WORKSPACE_COUNT=$(echo $WORKSPACES | jq '. | length')
     if [ "$WORKSPACE_COUNT" -gt "0" ]; then
-        # 添加订阅信息到每个工作区
+        # Add subscription info to each workspace
         WORKSPACES_WITH_SUB=$(echo $WORKSPACES | jq --arg subid "$SUB_ID" --arg subname "$SUB_NAME" '[.[] | . + {subscriptionId: $subid, subscriptionName: $subname}]')
         
-        # 合并到主列表
+        # Merge to main list
         jq -s '.[0] + .[1]' "$OUTPUT_DIR/workspaces.json" <(echo $WORKSPACES_WITH_SUB) > "$OUTPUT_DIR/temp.json"
         mv "$OUTPUT_DIR/temp.json" "$OUTPUT_DIR/workspaces.json"
         
-        echo "在订阅 $SUB_NAME 中找到 $WORKSPACE_COUNT 个工作区"
+        echo "Found $WORKSPACE_COUNT workspaces in subscription $SUB_NAME"
     else
-        echo "在订阅 $SUB_NAME 中未找到工作区"
+        echo "No workspaces found in subscription $SUB_NAME"
     fi
 done
 
 TOTAL_WORKSPACES=$(jq '. | length' "$OUTPUT_DIR/workspaces.json")
-echo -e "共找到 ${GREEN}$TOTAL_WORKSPACES${NC} 个Log Analytics工作区"
+echo -e "Found ${GREEN}$TOTAL_WORKSPACES${NC} Log Analytics workspaces"
 
-# 检查Network Watcher状态
-echo -e "\n${BLUE}[4/7] 检查Network Watcher状态...${NC}"
+# Check Network Watcher status
+echo -e "\n${BLUE}[4/7] Checking Network Watcher status...${NC}"
 
-# 初始化Network Watcher列表
+# Initialize Network Watcher list
 echo "[]" > "$OUTPUT_DIR/network_watchers.json"
 
-# 遍历所有订阅检查Network Watcher
+# Iterate through all subscriptions to check Network Watcher
 for SUB_ID in $(jq -r '.[].id' "$OUTPUT_DIR/subscriptions.json"); do
     SUB_NAME=$(jq -r '.[] | select(.id=="'$SUB_ID'") | .name' "$OUTPUT_DIR/subscriptions.json")
-    echo -e "检查订阅: ${YELLOW}$SUB_NAME${NC}"
+    echo -e "Checking subscription: ${YELLOW}$SUB_NAME${NC}"
     
-    # 切换订阅
+    # Switch subscription
     az account set --subscription $SUB_ID
     
-    # 获取当前订阅中的Network Watcher
+    # Get Network Watcher in current subscription
     WATCHERS=$(az network watcher list --query "[].{name:name, resourceGroup:resourceGroup, id:id, location:location}" -o json)
     
-    # 合并到主列表
+    # Merge to main list
     WATCHER_COUNT=$(echo $WATCHERS | jq '. | length')
     if [ "$WATCHER_COUNT" -gt "0" ]; then
-        # 添加订阅信息到每个Network Watcher
+        # Add subscription info to each Network Watcher
         WATCHERS_WITH_SUB=$(echo $WATCHERS | jq --arg subid "$SUB_ID" --arg subname "$SUB_NAME" '[.[] | . + {subscriptionId: $subid, subscriptionName: $subname}]')
         
-        # 合并到主列表
+        # Merge to main list
         jq -s '.[0] + .[1]' "$OUTPUT_DIR/network_watchers.json" <(echo $WATCHERS_WITH_SUB) > "$OUTPUT_DIR/temp.json"
         mv "$OUTPUT_DIR/temp.json" "$OUTPUT_DIR/network_watchers.json"
         
-        echo "在订阅 $SUB_NAME 中找到 $WATCHER_COUNT 个Network Watcher"
+        echo "Found $WATCHER_COUNT Network Watchers in subscription $SUB_NAME"
     else
-        echo "在订阅 $SUB_NAME 中未找到Network Watcher"
+        echo "No Network Watchers found in subscription $SUB_NAME"
     fi
 done
 
 TOTAL_WATCHERS=$(jq '. | length' "$OUTPUT_DIR/network_watchers.json")
-echo -e "共找到 ${GREEN}$TOTAL_WATCHERS${NC} 个Network Watcher"
+echo -e "Found ${GREEN}$TOTAL_WATCHERS${NC} Network Watchers"
 
-# 查找NSG流日志配置
-echo -e "\n${BLUE}[5/7] 查找NSG流日志配置...${NC}"
+# Find NSG flow log configurations
+echo -e "\n${BLUE}[5/7] Finding NSG flow log configurations...${NC}"
 
-# 初始化流日志列表
+# Initialize flow log list
 echo "[]" > "$OUTPUT_DIR/flow_logs.json"
 
-# 遍历所有Network Watcher检查流日志
+# Iterate through all Network Watcher to check flow logs
 for WATCHER_INDEX in $(seq 0 $(($(jq '. | length' "$OUTPUT_DIR/network_watchers.json")-1))); do
     WATCHER=$(jq -r ".[$WATCHER_INDEX]" "$OUTPUT_DIR/network_watchers.json")
     WATCHER_NAME=$(echo $WATCHER | jq -r '.name')
@@ -145,64 +145,64 @@ for WATCHER_INDEX in $(seq 0 $(($(jq '. | length' "$OUTPUT_DIR/network_watchers.
     WATCHER_SUB_ID=$(echo $WATCHER | jq -r '.subscriptionId')
     WATCHER_SUB_NAME=$(echo $WATCHER | jq -r '.subscriptionName')
     
-    echo -e "检查Network Watcher: ${YELLOW}$WATCHER_NAME${NC} (位置: $WATCHER_LOCATION, 订阅: $WATCHER_SUB_NAME)"
+    echo -e "Checking Network Watcher: ${YELLOW}$WATCHER_NAME${NC} (location: $WATCHER_LOCATION, subscription: $WATCHER_SUB_NAME)"
     
-    # 切换订阅
+    # Switch subscription
     az account set --subscription $WATCHER_SUB_ID
     
-    # 获取当前区域中的所有NSG
+    # Get NSGs in current region
     NSGS=$(az network nsg list --query "[?location=='$WATCHER_LOCATION'].{name:name, resourceGroup:resourceGroup, id:id}" -o json)
     NSG_COUNT=$(echo $NSGS | jq '. | length')
     
     if [ "$NSG_COUNT" -gt "0" ]; then
-        echo "在位置 $WATCHER_LOCATION 中找到 $NSG_COUNT 个NSG"
+        echo "Found $NSG_COUNT NSGs in region $WATCHER_LOCATION"
         
-        # 遍历NSG检查流日志
+        # Iterate through NSGs to check flow logs
         for NSG_INDEX in $(seq 0 $(($(echo $NSGS | jq '. | length')-1))); do
             NSG=$(echo $NSGS | jq -r ".[$NSG_INDEX]")
             NSG_NAME=$(echo $NSG | jq -r '.name')
             NSG_RG=$(echo $NSG | jq -r '.resourceGroup')
             
-            echo -e "  检查NSG: ${YELLOW}$NSG_NAME${NC} (资源组: $NSG_RG)"
+            echo -e "  Checking NSG: ${YELLOW}$NSG_NAME${NC} (resource group: $NSG_RG)"
             
-            # 获取NSG的流日志配置
+            # Get flow log configuration for NSG
             FLOW_LOG=$(az network watcher flow-log show --location $WATCHER_LOCATION --nsg $NSG_NAME --resource-group $NSG_RG 2>/dev/null)
             
             if [ $? -eq 0 ]; then
-                # 检查是否启用
+                # Check if flow log is enabled
                 ENABLED=$(echo $FLOW_LOG | jq -r '.enabled')
                 
                 if [ "$ENABLED" == "true" ]; then
-                    echo -e "  ${GREEN}找到已启用的流日志配置${NC}"
+                    echo -e "  ${GREEN}Found enabled flow log configuration${NC}"
                     
-                    # 添加NSG和订阅信息
+                    # Add NSG and subscription info
                     FLOW_LOG_WITH_INFO=$(echo $FLOW_LOG | jq --arg nsgname "$NSG_NAME" --arg nsgrg "$NSG_RG" --arg subid "$WATCHER_SUB_ID" --arg subname "$WATCHER_SUB_NAME" '. + {nsgName: $nsgname, nsgResourceGroup: $nsgrg, subscriptionId: $subid, subscriptionName: $subname}')
                     
-                    # 合并到主列表
+                    # Merge to main list
                     jq -s '.[0] + [$1]' "$OUTPUT_DIR/flow_logs.json" <(echo $FLOW_LOG_WITH_INFO) > "$OUTPUT_DIR/temp.json"
                     mv "$OUTPUT_DIR/temp.json" "$OUTPUT_DIR/flow_logs.json"
                 else
-                    echo -e "  ${YELLOW}找到未启用的流日志配置${NC}"
+                    echo -e "  ${YELLOW}Found disabled flow log configuration${NC}"
                 fi
             else
-                echo -e "  ${YELLOW}未找到流日志配置${NC}"
+                echo -e "  ${YELLOW}No flow log configuration found${NC}"
             fi
         done
     else
-        echo "在位置 $WATCHER_LOCATION 中未找到NSG"
+        echo "No NSGs found in region $WATCHER_LOCATION"
     fi
 done
 
 TOTAL_FLOW_LOGS=$(jq '. | length' "$OUTPUT_DIR/flow_logs.json")
-echo -e "共找到 ${GREEN}$TOTAL_FLOW_LOGS${NC} 个已启用的流日志配置"
+echo -e "Found ${GREEN}$TOTAL_FLOW_LOGS${NC} enabled flow log configurations"
 
-# 使用KQL查询Log Analytics工作区
-echo -e "\n${BLUE}[6/7] 使用KQL查询Log Analytics工作区...${NC}"
+# Query Log Analytics workspaces using KQL
+echo -e "\n${BLUE}[6/7] Querying Log Analytics workspaces using KQL...${NC}"
 
-# 初始化结果计数器
+# Initialize result counter
 TOTAL_RESULTS=0
 
-# 遍历所有工作区执行查询
+# Iterate through all workspaces to execute query
 for WORKSPACE_INDEX in $(seq 0 $(($(jq '. | length' "$OUTPUT_DIR/workspaces.json")-1))); do
     WORKSPACE=$(jq -r ".[$WORKSPACE_INDEX]" "$OUTPUT_DIR/workspaces.json")
     WORKSPACE_NAME=$(echo $WORKSPACE | jq -r '.name')
@@ -211,12 +211,12 @@ for WORKSPACE_INDEX in $(seq 0 $(($(jq '. | length' "$OUTPUT_DIR/workspaces.json
     WORKSPACE_SUB_NAME=$(echo $WORKSPACE | jq -r '.subscriptionName')
     WORKSPACE_ID=$(echo $WORKSPACE | jq -r '.customerId')
     
-    echo -e "查询工作区: ${YELLOW}$WORKSPACE_NAME${NC} (订阅: $WORKSPACE_SUB_NAME)"
+    echo -e "Querying workspace: ${YELLOW}$WORKSPACE_NAME${NC} (subscription: $WORKSPACE_SUB_NAME)"
     
-    # 切换订阅
+    # Switch subscription
     az account set --subscription $WORKSPACE_SUB_ID
     
-    # 构建KQL查询 - Network Traffic Analytics
+    # Build KQL query - Network Traffic Analytics
     KQL_QUERY_NETWORK="
     AzureNetworkAnalytics_CL
     | where TimeGenerated between (datetime('$START_DATE') .. datetime('$END_DATE'))
@@ -246,26 +246,26 @@ for WORKSPACE_INDEX in $(seq 0 $(($(jq '. | length' "$OUTPUT_DIR/workspaces.json
     | limit 10000
     "
     
-    # 执行网络流量查询
-    echo "执行网络流量查询..."
+    # Execute network traffic query
+    echo "Executing network traffic query..."
     NETWORK_RESULTS=$(az monitor log-analytics query --workspace $WORKSPACE_NAME --resource-group $WORKSPACE_RG --analytics-query "$KQL_QUERY_NETWORK" -o json 2>/dev/null)
     
     if [ $? -eq 0 ]; then
         NETWORK_COUNT=$(echo $NETWORK_RESULTS | jq '. | length')
         
         if [ "$NETWORK_COUNT" -gt "0" ]; then
-            echo -e "${GREEN}找到 $NETWORK_COUNT 条网络流量记录${NC}"
+            echo -e "${GREEN}Found $NETWORK_COUNT network traffic records${NC}"
             
-            # 添加工作区信息到结果
+            # Add workspace info to results
             NETWORK_RESULTS_WITH_INFO=$(echo $NETWORK_RESULTS | jq --arg wsname "$WORKSPACE_NAME" --arg wsrg "$WORKSPACE_RG" --arg subid "$WORKSPACE_SUB_ID" --arg subname "$WORKSPACE_SUB_NAME" '[.[] | . + {workspaceName: $wsname, workspaceResourceGroup: $wsrg, subscriptionId: $subid, subscriptionName: $subname}]')
             
-            # 保存结果
+            # Save results
             echo $NETWORK_RESULTS_WITH_INFO > "$OUTPUT_DIR/network_traffic_${WORKSPACE_NAME}.json"
             
-            # 更新总结果计数
+            # Update total result counter
             TOTAL_RESULTS=$((TOTAL_RESULTS + NETWORK_COUNT))
             
-            # 生成CSV
+            # Generate CSV
             echo "TimeGenerated,NSGName,SrcIP,SrcPort,DestIP,DestPort,Protocol,Direction,Status,BytesSent,BytesReceived,VM,Subnet,WorkspaceName,SubscriptionName" > "$OUTPUT_DIR/network_traffic_${WORKSPACE_NAME}.csv"
             
             echo $NETWORK_RESULTS_WITH_INFO | jq -r '.[] | [
@@ -286,10 +286,10 @@ for WORKSPACE_INDEX in $(seq 0 $(($(jq '. | length' "$OUTPUT_DIR/workspaces.json
                 .subscriptionName
             ] | @csv' >> "$OUTPUT_DIR/network_traffic_${WORKSPACE_NAME}.csv"
             
-            # 执行统计分析
-            echo "执行统计分析..."
+            # Execute statistical analysis
+            echo "Executing statistical analysis..."
             
-            # 按协议和端口统计
+            # Protocol and port statistics
             KQL_QUERY_STATS="
             AzureNetworkAnalytics_CL
             | where TimeGenerated between (datetime('$START_DATE') .. datetime('$END_DATE'))
@@ -307,10 +307,10 @@ for WORKSPACE_INDEX in $(seq 0 $(($(jq '. | length' "$OUTPUT_DIR/workspaces.json
             STATS_RESULTS=$(az monitor log-analytics query --workspace $WORKSPACE_NAME --resource-group $WORKSPACE_RG --analytics-query "$KQL_QUERY_STATS" -o json 2>/dev/null)
             
             if [ $? -eq 0 ] && [ "$(echo $STATS_RESULTS | jq '. | length')" -gt "0" ]; then
-                echo "保存统计分析结果..."
+                echo "Saving statistical analysis results..."
                 echo $STATS_RESULTS > "$OUTPUT_DIR/traffic_stats_${WORKSPACE_NAME}.json"
                 
-                # 生成CSV
+                # Generate CSV
                 echo "Protocol,Port,FlowCount,TotalBytes,AllowedFlows,DeniedFlows" > "$OUTPUT_DIR/traffic_stats_${WORKSPACE_NAME}.csv"
                 
                 echo $STATS_RESULTS | jq -r '.[] | [
@@ -323,7 +323,7 @@ for WORKSPACE_INDEX in $(seq 0 $(($(jq '. | length' "$OUTPUT_DIR/workspaces.json
                 ] | @csv' >> "$OUTPUT_DIR/traffic_stats_${WORKSPACE_NAME}.csv"
             fi
             
-            # 按源目标IP统计
+            # Source and destination IP statistics
             KQL_QUERY_IP_STATS="
             AzureNetworkAnalytics_CL
             | where TimeGenerated between (datetime('$START_DATE') .. datetime('$END_DATE'))
@@ -343,10 +343,10 @@ for WORKSPACE_INDEX in $(seq 0 $(($(jq '. | length' "$OUTPUT_DIR/workspaces.json
             IP_STATS_RESULTS=$(az monitor log-analytics query --workspace $WORKSPACE_NAME --resource-group $WORKSPACE_RG --analytics-query "$KQL_QUERY_IP_STATS" -o json 2>/dev/null)
             
             if [ $? -eq 0 ] && [ "$(echo $IP_STATS_RESULTS | jq '. | length')" -gt "0" ]; then
-                echo "保存IP统计分析结果..."
+                echo "Saving IP statistics analysis results..."
                 echo $IP_STATS_RESULTS > "$OUTPUT_DIR/ip_stats_${WORKSPACE_NAME}.json"
                 
-                # 生成CSV
+                # Generate CSV
                 echo "PeerIP,Direction,FlowCount,TotalBytes,AllowedFlows,DeniedFlows" > "$OUTPUT_DIR/ip_stats_${WORKSPACE_NAME}.csv"
                 
                 echo $IP_STATS_RESULTS | jq -r '.[] | [
@@ -359,7 +359,7 @@ for WORKSPACE_INDEX in $(seq 0 $(($(jq '. | length' "$OUTPUT_DIR/workspaces.json
                 ] | @csv' >> "$OUTPUT_DIR/ip_stats_${WORKSPACE_NAME}.csv"
             fi
             
-            # 时间序列分析
+            # Time series analysis
             KQL_QUERY_TIMESERIES="
             AzureNetworkAnalytics_CL
             | where TimeGenerated between (datetime('$START_DATE') .. datetime('$END_DATE'))
@@ -376,10 +376,10 @@ for WORKSPACE_INDEX in $(seq 0 $(($(jq '. | length' "$OUTPUT_DIR/workspaces.json
             TIMESERIES_RESULTS=$(az monitor log-analytics query --workspace $WORKSPACE_NAME --resource-group $WORKSPACE_RG --analytics-query "$KQL_QUERY_TIMESERIES" -o json 2>/dev/null)
             
             if [ $? -eq 0 ] && [ "$(echo $TIMESERIES_RESULTS | jq '. | length')" -gt "0" ]; then
-                echo "保存时间序列分析结果..."
+                echo "Saving time series analysis results..."
                 echo $TIMESERIES_RESULTS > "$OUTPUT_DIR/timeseries_${WORKSPACE_NAME}.json"
                 
-                # 生成CSV
+                # Generate CSV
                 echo "TimeGenerated,FlowCount,TotalBytes,AllowedFlows,DeniedFlows" > "$OUTPUT_DIR/timeseries_${WORKSPACE_NAME}.csv"
                 
                 echo $TIMESERIES_RESULTS | jq -r '.[] | [
@@ -392,14 +392,14 @@ for WORKSPACE_INDEX in $(seq 0 $(($(jq '. | length' "$OUTPUT_DIR/workspaces.json
             fi
             
         else
-            echo -e "${YELLOW}未找到网络流量记录${NC}"
+            echo -e "${YELLOW}No network traffic records found${NC}"
         fi
     else
-        echo -e "${YELLOW}查询失败或工作区中没有AzureNetworkAnalytics_CL表${NC}"
+        echo -e "${YELLOW}Query failed or workspace does not have AzureNetworkAnalytics_CL table${NC}"
     fi
     
-    # 查询安全事件表
-    echo "查询安全事件表..."
+    # Query security event table
+    echo "Querying security event table..."
     KQL_QUERY_SECURITY="
     SecurityEvent
     | where TimeGenerated between (datetime('$START_DATE') .. datetime('$END_DATE'))
@@ -421,18 +421,18 @@ for WORKSPACE_INDEX in $(seq 0 $(($(jq '. | length' "$OUTPUT_DIR/workspaces.json
     
     if [ $? -eq 0 ] && [ "$(echo $SECURITY_RESULTS | jq '. | length')" -gt "0" ]; then
         SECURITY_COUNT=$(echo $SECURITY_RESULTS | jq '. | length')
-        echo -e "${GREEN}找到 $SECURITY_COUNT 条安全事件记录${NC}"
+        echo -e "${GREEN}Found $SECURITY_COUNT security event records${NC}"
         
-        # 添加工作区信息
+        # Add workspace info
         SECURITY_RESULTS_WITH_INFO=$(echo $SECURITY_RESULTS | jq --arg wsname "$WORKSPACE_NAME" --arg wsrg "$WORKSPACE_RG" --arg subid "$WORKSPACE_SUB_ID" --arg subname "$WORKSPACE_SUB_NAME" '[.[] | . + {workspaceName: $wsname, workspaceResourceGroup: $wsrg, subscriptionId: $subid, subscriptionName: $subname}]')
         
-        # 保存结果
+        # Save results
         echo $SECURITY_RESULTS_WITH_INFO > "$OUTPUT_DIR/security_events_${WORKSPACE_NAME}.json"
         
-        # 更新总结果计数
+        # Update total result counter
         TOTAL_RESULTS=$((TOTAL_RESULTS + SECURITY_COUNT))
         
-        # 生成CSV
+        # Generate CSV
         echo "TimeGenerated,EventID,Activity,Computer,Account,SourceIp,DestinationIp,DestinationPort,WorkspaceName,SubscriptionName" > "$OUTPUT_DIR/security_events_${WORKSPACE_NAME}.csv"
         
         echo $SECURITY_RESULTS_WITH_INFO | jq -r '.[] | [
@@ -450,13 +450,13 @@ for WORKSPACE_INDEX in $(seq 0 $(($(jq '. | length' "$OUTPUT_DIR/workspaces.json
     fi
 done
 
-echo -e "在所有工作区中共找到 ${GREEN}$TOTAL_RESULTS${NC} 条与IP $TARGET_IP 相关的记录"
+echo -e "Found ${GREEN}$TOTAL_RESULTS${NC} records related to IP $TARGET_IP in all workspaces"
 
-# 使用Azure Resource Graph查询相关资源
-echo -e "\n${BLUE}[7/7] 使用Azure Resource Graph查询与IP相关的资源...${NC}"
+# Query Azure resources using Azure Resource Graph
+echo -e "\n${BLUE}[7/7] Querying Azure resources using Azure Resource Graph...${NC}"
 
-# 构建查询
-echo "构建Azure Resource Graph查询..."
+# Build query
+echo "Building Azure Resource Graph query..."
 ARG_QUERY="Resources 
 | where type =~ 'microsoft.network/networkinterfaces' 
 | where properties.ipConfigurations[0].properties.privateIPAddress =~ '$TARGET_IP' 
@@ -472,19 +472,19 @@ ARG_QUERY="Resources
 | extend vmId = tostring(properties.virtualMachine.id) 
 | project id, name, resourceGroup, subscriptionId, location, privateIp=properties.ipConfigurations[0].properties.privateIPAddress, publicIp=ipAddress, vmId"
 
-echo "执行Azure Resource Graph查询..."
+echo "Executing Azure Resource Graph query..."
 ARG_RESULTS=$(az graph query -q "$ARG_QUERY" --query "data" -o json)
 
 if [ $? -eq 0 ]; then
     ARG_COUNT=$(echo $ARG_RESULTS | jq '. | length')
     
     if [ "$ARG_COUNT" -gt "0" ]; then
-        echo -e "${GREEN}找到 $ARG_COUNT 个与IP $TARGET_IP 相关的网络资源${NC}"
+        echo -e "${GREEN}Found $ARG_COUNT Azure resources related to IP $TARGET_IP${NC}"
         
-        # 保存结果
+        # Save results
         echo $ARG_RESULTS > "$OUTPUT_DIR/related_resources.json"
         
-        # 生成CSV
+        # Generate CSV
         echo "id,name,resourceGroup,subscriptionId,location,privateIp,publicIp,vmId" > "$OUTPUT_DIR/related_resources.csv"
         
         echo $ARG_RESULTS | jq -r '.[] | [
@@ -498,12 +498,12 @@ if [ $? -eq 0 ]; then
             .vmId
         ] | @csv' >> "$OUTPUT_DIR/related_resources.csv"
         
-        # 查询相关VM信息
-        echo -e "\n查询相关虚拟机信息..."
+        # Query related VM information
+        echo -e "\nQuerying related VM information..."
         VM_IDS=$(echo $ARG_RESULTS | jq -r '.[].vmId' | grep -v "null" | sort | uniq)
         
         if [ -n "$VM_IDS" ]; then
-            # 构建VM查询
+            # Build VM query
             VM_ID_LIST=$(echo $VM_IDS | tr '\n' ' ' | sed 's/ /", "/g')
             VM_ID_LIST="\"$VM_ID_LIST\""
             VM_QUERY="Resources 
@@ -515,23 +515,23 @@ if [ $? -eq 0 ]; then
             | extend computerName = properties.osProfile.computerName 
             | project id, name, resourceGroup, subscriptionId, location, osType, osName, osVersion, computerName, tags"
             
-            echo "执行虚拟机信息查询..."
+            echo "Executing VM information query..."
             VM_RESULTS=$(az graph query -q "$VM_QUERY" --query "data" -o json)
             
             if [ $? -eq 0 ] && [ "$(echo $VM_RESULTS | jq '. | length')" -gt "0" ]; then
-                echo -e "${GREEN}找到 $(echo $VM_RESULTS | jq '. | length') 台相关虚拟机${NC}"
+                echo -e "${GREEN}Found $(echo $VM_RESULTS | jq '. | length') related VMs${NC}"
                 echo $VM_RESULTS > "$OUTPUT_DIR/related_vms.json"
             else
-                echo -e "${YELLOW}未找到相关虚拟机详细信息${NC}"
+                echo -e "${YELLOW}No related VM information found${NC}"
             fi
         else
-            echo -e "${YELLOW}未找到相关虚拟机ID${NC}"
+            echo -e "${YELLOW}No related VM IDs found${NC}"
         fi
     else
-        echo -e "${YELLOW}未找到与IP $TARGET_IP 相关的直接网络资源${NC}"
+        echo -e "${YELLOW}No Azure resources related to IP $TARGET_IP found${NC}"
         
-        # 尝试查找通信过的相关资源
-        echo "尝试查找与目标IP $TARGET_IP 有通信记录的资源..."
+        # Try to find communicating resources
+        echo "Trying to find communicating resources..."
         COMM_QUERY="Resources 
         | where type =~ 'microsoft.network/networksecuritygroups' 
         | where properties.securityRules[*].properties.sourceAddressPrefix contains '$TARGET_IP' 
@@ -541,21 +541,21 @@ if [ $? -eq 0 ]; then
         COMM_RESULTS=$(az graph query -q "$COMM_QUERY" --query "data" -o json)
         
         if [ $? -eq 0 ] && [ "$(echo $COMM_RESULTS | jq '. | length')" -gt "0" ]; then
-            echo -e "${GREEN}找到 $(echo $COMM_RESULTS | jq '. | length') 个与IP $TARGET_IP 相关的NSG规则${NC}"
+            echo -e "${GREEN}Found $(echo $COMM_RESULTS | jq '. | length') NSG rules related to IP $TARGET_IP${NC}"
             echo $COMM_RESULTS > "$OUTPUT_DIR/related_nsg_rules.json"
         else
-            echo -e "${YELLOW}在NSG规则中也未找到目标IP $TARGET_IP${NC}"
+            echo -e "${YELLOW}No NSG rules related to IP $TARGET_IP found${NC}"
         fi
     fi
 else
-    echo -e "${YELLOW}Azure Resource Graph查询失败${NC}"
+    echo -e "${YELLOW}Azure Resource Graph query failed${NC}"
 fi
 
-# 创建汇总报告
-echo -e "\n${BLUE}创建汇总报告...${NC}"
+# Create summary report
+echo -e "\n${BLUE}Creating summary report...${NC}"
 
-# 合并所有网络流量结果
-echo "合并所有网络流量结果..."
+# Merge all network traffic results
+echo "Merging all network traffic results..."
 echo "[]" > "$OUTPUT_DIR/all_network_traffic.json"
 
 for NETWORK_FILE in $OUTPUT_DIR/network_traffic_*.json; do
@@ -565,12 +565,12 @@ for NETWORK_FILE in $OUTPUT_DIR/network_traffic_*.json; do
     fi
 done
 
-# 创建汇总CSV
-echo "创建汇总CSV..."
+# Create summary CSV
+echo "Creating summary CSV..."
 echo "TimeGenerated,NSGName,SrcIP,SrcPort,DestIP,DestPort,Protocol,Direction,Status,BytesSent,BytesReceived,VM,Subnet,WorkspaceName,SubscriptionName" > "$OUTPUT_DIR/all_network_traffic.csv"
 
 cat $OUTPUT_DIR/network_traffic_*.csv | grep -v "TimeGenerated" >> "$OUTPUT_DIR/all_network_traffic.csv"
 
-# 创建HTML报告
-echo "创建HTML报告..."
+# Create HTML report
+echo "Creating HTML report..."
 cat > "$OUTPUT_DIR/report.html"
