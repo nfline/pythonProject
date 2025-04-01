@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 """
 query_ip_azure.py - Query Azure network traffic logs by IP address
-Usage: python query_ip_azure.py <IP_address> [days]
+Usage: python query_ip_azure.py <IP_address> [--days <number>]
 
 This script finds resources associated with the specified IP address,
 identifies relevant NSGs and their flow logs, and queries relevant
 Log Analytics workspaces for network traffic data.
+
+Examples:
+  python query_ip_azure.py 10.0.0.1
+  python query_ip_azure.py 192.168.1.100 --days 7
 """
 
 import os
@@ -19,7 +23,7 @@ from typing import Dict, List, Any, Optional, Tuple, Union
 
 # Azure imports
 try:
-    from azure.identity import DefaultAzureCredential
+    from azure.identity import DefaultAzureCredential, AzureCliCredential
     from azure.mgmt.resource import ResourceManagementClient
     from azure.mgmt.network import NetworkManagementClient
     from azure.mgmt.monitor import MonitorManagementClient
@@ -107,7 +111,7 @@ class AzureIPTrafficAnalyzer:
         os.makedirs(self.output_dir, exist_ok=True)
         
         # Initialize Azure clients
-        self.credential = DefaultAzureCredential()
+        self.credential = None
         self.subscription_id = None
         self.resource_client = None
         self.network_client = None
@@ -140,37 +144,95 @@ class AzureIPTrafficAnalyzer:
         print_info("\n[1/5] Checking Azure login status...")
         
         try:
-            # Get subscription client
-            from azure.mgmt.subscription import SubscriptionClient
-            subscription_client = SubscriptionClient(self.credential)
-            
-            # Get current subscription
-            subscriptions = list(subscription_client.subscriptions.list())
-            if not subscriptions:
-                print_error("No subscriptions found. Please check your Azure credentials.")
-                return False
+            # First try DefaultAzureCredential which supports multiple auth methods
+            print("Attempting to authenticate with DefaultAzureCredential...")
+            try:
+                self.credential = DefaultAzureCredential()
                 
-            # Use the first subscription as default
-            self.subscription_id = subscriptions[0].subscription_id
-            print_success(f"Successfully authenticated with Azure")
-            print(f"Current Subscription: {Colors.YELLOW}{self.subscription_id}{Colors.RESET}")
+                # Test if credential is valid by attempting to list subscriptions
+                from azure.mgmt.subscription import SubscriptionClient
+                subscription_client = SubscriptionClient(self.credential)
+                subscriptions = list(subscription_client.subscriptions.list())
+                
+                if subscriptions:
+                    self.subscription_id = subscriptions[0].subscription_id
+                    print_success(f"Successfully authenticated with Azure using DefaultAzureCredential")
+                    print(f"Current Subscription: {Colors.YELLOW}{self.subscription_id}{Colors.RESET}")
+                    
+                    # Initialize clients
+                    self.resource_client = ResourceManagementClient(self.credential, self.subscription_id)
+                    self.network_client = NetworkManagementClient(self.credential, self.subscription_id)
+                    self.monitor_client = MonitorManagementClient(self.credential, self.subscription_id)
+                    self.loganalytics_client = LogAnalyticsManagementClient(self.credential, self.subscription_id)
+                    
+                    return True
+            except Exception as e:
+                print_warning(f"DefaultAzureCredential authentication failed: {str(e)}")
+                print("Trying alternative authentication methods...")
             
-            # Initialize clients
-            self.resource_client = ResourceManagementClient(self.credential, self.subscription_id)
-            self.network_client = NetworkManagementClient(self.credential, self.subscription_id)
-            self.monitor_client = MonitorManagementClient(self.credential, self.subscription_id)
-            self.loganalytics_client = LogAnalyticsManagementClient(self.credential, self.subscription_id)
-            
-            return True
-            
-        except ClientAuthenticationError as e:
-            print_error(f"Authentication failed: {str(e)}")
-            print("Please run 'az login' to authenticate with Azure CLI or check your credentials.")
+            # Try using Azure CLI authentication directly
+            print("Attempting to authenticate using Azure CLI...")
+            try:
+                from azure.cli.core import get_default_cli
+                
+                # Check if logged in
+                cli = get_default_cli()
+                cli.invoke(['account', 'show'])
+                if cli.result.result:
+                    account_info = cli.result.result
+                    self.subscription_id = account_info.get('id')
+                    
+                    # Use CLI credential
+                    self.credential = AzureCliCredential()
+                    
+                    print_success(f"Successfully authenticated with Azure using Azure CLI")
+                    print(f"Current Subscription: {Colors.YELLOW}{self.subscription_id}{Colors.RESET}")
+                    
+                    # Initialize clients
+                    self.resource_client = ResourceManagementClient(self.credential, self.subscription_id)
+                    self.network_client = NetworkManagementClient(self.credential, self.subscription_id)
+                    self.monitor_client = MonitorManagementClient(self.credential, self.subscription_id)
+                    self.loganalytics_client = LogAnalyticsManagementClient(self.credential, self.subscription_id)
+                    
+                    return True
+                else:
+                    # Try to login
+                    print("Azure CLI not logged in. Attempting to login...")
+                    exit_code = cli.invoke(['login'])
+                    if exit_code == 0 and cli.result.result:
+                        account_info = cli.result.result
+                        self.subscription_id = account_info.get('id')
+                        
+                        # Use CLI credential
+                        self.credential = AzureCliCredential()
+                        
+                        print_success(f"Successfully authenticated with Azure using Azure CLI")
+                        print(f"Current Subscription: {Colors.YELLOW}{self.subscription_id}{Colors.RESET}")
+                        
+                        # Initialize clients
+                        self.resource_client = ResourceManagementClient(self.credential, self.subscription_id)
+                        self.network_client = NetworkManagementClient(self.credential, self.subscription_id)
+                        self.monitor_client = MonitorManagementClient(self.credential, self.subscription_id)
+                        self.loganalytics_client = LogAnalyticsManagementClient(self.credential, self.subscription_id)
+                        
+                        return True
+            except Exception as e:
+                print_warning(f"Azure CLI authentication failed: {str(e)}")
+                
+            print_error("All authentication methods failed")
+            print("Please try one of the following methods:")
+            print("1. Run 'az login' in a terminal to authenticate with Azure CLI")
+            print("2. Set the following environment variables for service principal:")
+            print("   - AZURE_TENANT_ID")
+            print("   - AZURE_CLIENT_ID")
+            print("   - AZURE_CLIENT_SECRET")
+            print("3. Use managed identity if running on Azure")
             return False
+            
         except Exception as e:
             print_error(f"Unexpected error during authentication: {str(e)}")
             return False
-            
+
     def find_resources_by_ip(self) -> None:
         """Find Azure resources associated with the target IP address."""
         print_info(f"\n[2/5] Finding resources associated with IP {self.target_ip}...")
@@ -291,10 +353,11 @@ class AzureIPTrafficAnalyzer:
                     print_success(f"Found {len(matching_subnets)} subnets that contain IP {self.target_ip}")
                     
                     # Generate CSV for matching subnets
-                    headers = ["vnetName", "subnetName", "subnetPrefix", "subnetId", "nsgId", "resourceGroup"]
-                    save_csv(matching_subnets, 
-                             os.path.join(self.output_dir, "matching_subnets.csv"),
-                             headers)
+                    if matching_subnets:
+                        headers = ["vnetName", "subnetName", "subnetPrefix", "subnetId", "nsgId", "resourceGroup"]
+                        save_csv(matching_subnets, 
+                                 os.path.join(self.output_dir, "matching_subnets.csv"),
+                                 headers)
                     
                     # Extract NSG IDs from matching subnets
                     nsg_ids = []
@@ -738,7 +801,15 @@ class AzureIPTrafficAnalyzer:
 
 def main():
     """Main entry point for the script."""
-    parser = argparse.ArgumentParser(description='Query Azure network traffic logs by IP address')
+    parser = argparse.ArgumentParser(
+        description='Query Azure network traffic logs by IP address',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python query_ip_azure.py 10.0.0.1
+  python query_ip_azure.py 192.168.1.100 --days 7
+        """
+    )
     parser.add_argument('ip_address', help='The IP address to query for')
     parser.add_argument('--days', type=int, default=30, help='Number of days to look back (default: 30)')
     
