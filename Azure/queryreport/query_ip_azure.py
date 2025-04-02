@@ -255,7 +255,7 @@ class AzureIPTrafficAnalyzer:
             return False
 
     def find_resources_by_ip(self) -> None:
-        """Find Azure resources associated with the target IP address."""
+        """Find Azure resources associated with the target IP address and determine related NSG flow logs."""
         print_info(f"\n[2/5] Finding resources associated with IP {self.target_ip}...")
         
         try:
@@ -272,207 +272,344 @@ class AzureIPTrafficAnalyzer:
                 print_info("Creating Resource Graph client...")
                 graph_client = ResourceGraphClient(self.credential)
                 
-                # Query for network interfaces with this IP
+                # 1. DIRECTLY QUERY NETWORK INTERFACES WITH THIS IP
                 print_info(f"Querying for network interfaces with IP {self.target_ip}...")
                 query = f"""
                 Resources
                 | where type =~ 'microsoft.network/networkinterfaces'
                 | where properties.ipConfigurations[0].properties.privateIPAddress =~ '{self.target_ip}'
                 | project id, name, resourceGroup, subscriptionId, location, 
+                         vnetId = tostring(properties.ipConfigurations[0].properties.subnet.id),
+                         subnetName = tostring(split(properties.ipConfigurations[0].properties.subnet.id, '/')[-1]),
                          nsgId = tostring(properties.networkSecurityGroup.id)
                 """
                 
                 request = QueryRequest(query=query, subscriptions=[self.subscription_id])
+                response = graph_client.resources(request)
                 
-                try:
-                    response = graph_client.resources(request)
+                if response.data:
+                    self.associated_resources = response.data
+                    save_json(self.associated_resources, os.path.join(self.output_dir, "associated_resources.json"))
+                    print_success(f"Found {len(self.associated_resources)} resources with IP {self.target_ip}")
                     
-                    if response.data:
-                        self.associated_resources = response.data
-                        save_json(self.associated_resources, os.path.join(self.output_dir, "associated_resources.json"))
-                        
-                        print_success(f"Found {len(self.associated_resources)} resources with IP {self.target_ip}")
-                        
-                        # Generate CSV
-                        if self.associated_resources:
-                            headers = ["id", "name", "resourceGroup", "subscriptionId", "location", "nsgId"]
-                            save_csv(self.associated_resources, 
-                                     os.path.join(self.output_dir, "associated_resources.csv"),
-                                     headers)
-                    else:
-                        print_warning(f"No resources directly associated with IP {self.target_ip} found")
-                except Exception as query_error:
-                    print_error(f"Error executing Resource Graph query: {str(query_error)}")
-                    # Try alternative method using Azure CLI
-                    print_info("Attempting to use Azure CLI directly...")
-                    import subprocess
-                    import json
+                    # 2. EXTRACT VNET AND SUBNET INFO
+                    vnet_ids = []
+                    subnet_ids = []
+                    nsg_ids = []
                     
-                    cmd = f"az graph query -q \"Resources | where type =~ 'microsoft.network/networkinterfaces' | where properties.ipConfigurations[0].properties.privateIPAddress =~ '{self.target_ip}' | project id, name, resourceGroup, subscriptionId, location, nsgId = tostring(properties.networkSecurityGroup.id)\" --query \"data\" -o json"
-                    try:
-                        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, check=False)
-                        if result.returncode == 0 and result.stdout.strip():
-                            self.associated_resources = json.loads(result.stdout)
-                            save_json(self.associated_resources, os.path.join(self.output_dir, "associated_resources.json"))
-                            print_success(f"Found {len(self.associated_resources)} resources with IP {self.target_ip} (using CLI)")
+                    for nic in self.associated_resources:
+                        vnet_id = nic.get('vnetId')
+                        if vnet_id:
+                            # Extract VNET ID from subnet ID (format: /subscriptions/{sub}/resourceGroups/{rg}/providers/Microsoft.Network/virtualNetworks/{vnet}/subnets/{subnet})
+                            vnet_parts = vnet_id.split('/')
+                            if len(vnet_parts) >= 9:
+                                # Reconstruct VNET ID
+                                v_id = '/'.join(vnet_parts[:-2])
+                                if v_id and v_id not in vnet_ids:
+                                    vnet_ids.append(v_id)
+                                
+                                # Save subnet ID
+                                if vnet_id not in subnet_ids:
+                                    subnet_ids.append(vnet_id)
+                        
+                        # Collect NSGs directly associated with NICs
+                        nsg_id = nic.get('nsgId')
+                        if nsg_id and nsg_id not in nsg_ids:
+                            nsg_ids.append(nsg_id)
+                    
+                    print_success(f"Found {len(vnet_ids)} related virtual networks")
+                    print_success(f"Found {len(subnet_ids)} related subnets")
+                    
+                    # 3. QUERY SUBNETS FOR NSG INFORMATION
+                    if subnet_ids:
+                        print_info("Querying subnet network security groups...")
+                        
+                        # Format subnet IDs for query
+                        subnet_id_list = ",".join([f"'{s}'" for s in subnet_ids])
+                        
+                        subnet_query = f"""
+                        Resources
+                        | where type =~ 'microsoft.network/virtualnetworks'
+                        | mv-expand subnet=properties.subnets
+                        | where subnet.id in~ ({subnet_id_list})
+                        | project subnetId = subnet.id,
+                                  subnetName = subnet.name,
+                                  nsgId = tostring(subnet.properties.networkSecurityGroup.id)
+                        """
+                        
+                        try:
+                            subnet_request = QueryRequest(query=subnet_query, subscriptions=[self.subscription_id])
+                            subnet_response = graph_client.resources(subnet_request)
                             
-                            # Generate CSV
-                            if self.associated_resources:
-                                headers = ["id", "name", "resourceGroup", "subscriptionId", "location", "nsgId"]
-                                save_csv(self.associated_resources, 
-                                         os.path.join(self.output_dir, "associated_resources.csv"),
-                                         headers)
-                        else:
-                            print_error(f"Azure CLI failed: {result.stderr}")
-                    except Exception as cli_error:
-                        print_error(f"Error using Azure CLI directly: {str(cli_error)}")
+                            if subnet_response.data:
+                                for subnet in subnet_response.data:
+                                    subnet_nsg = subnet.get('nsgId')
+                                    if subnet_nsg and subnet_nsg not in nsg_ids:
+                                        nsg_ids.append(subnet_nsg)
+                        except Exception as subnet_error:
+                            print_warning(f"Error querying subnet NSGs: {str(subnet_error)}")
+                    
+                    # Save all related NSG IDs
+                    self.subnet_nsg_ids = nsg_ids
+                    save_json(nsg_ids, os.path.join(self.output_dir, "related_nsg_ids.json"))
+                    print_success(f"Found {len(nsg_ids)} associated network security groups")
+                    
+                    # 4. Directly proceed to find flow logs for the collected NSGs
+                    if nsg_ids:
+                        self.find_flow_logs()
+                    else:
+                        print_warning("No associated NSGs found, cannot query flow logs")
+                else:
+                    # If no network interfaces found, try to find subnets containing this IP
+                    print_warning(f"No resources with IP {self.target_ip} found, trying to find subnets containing this IP...")
+                    self._find_subnets_containing_ip(graph_client)
             except ImportError:
                 print_error("Unable to import azure.mgmt.resourcegraph. Please install it using: pip install azure-mgmt-resourcegraph")
                 return
-                
-            # Find subnets that contain this IP address
-            print_info(f"\n[3a/5] Finding subnets that contain IP {self.target_ip}...")
-            
-            # Parse the IP address to determine subnet range
-            ip_parts = self.target_ip.split('.')
-            if len(ip_parts) != 4:
-                print_error(f"Invalid IP address format: {self.target_ip}")
-                return
-                
-            # Convert IP string to integer for subnet calculations
-            try:
-                ip_int = (int(ip_parts[0]) << 24) + (int(ip_parts[1]) << 16) + (int(ip_parts[2]) << 8) + int(ip_parts[3])
-            except ValueError:
-                print_error(f"Invalid IP address components: {self.target_ip}")
-                return
-            
-            # Query virtual networks and their subnets
-            try:
-                query = f"""
-                Resources
-                | where type =~ 'microsoft.network/virtualnetworks'
-                | mv-expand subnet=properties.subnets
-                | project vnetName=name, vnetId=id, subnetName=subnet.name, 
-                        subnetPrefix=subnet.properties.addressPrefix,
-                        subnetId=subnet.id, 
-                        nsgId=subnet.properties.networkSecurityGroup.id,
-                        resourceGroup, subscriptionId, location
-                """
-                
-                request = QueryRequest(query=query, subscriptions=[self.subscription_id])
-                
-                try:
-                    response = graph_client.resources(request)
-                    
-                    # Function to check if IP is in subnet
-                    def ip_in_subnet(ip_addr: str, subnet_prefix: str) -> bool:
-                        try:
-                            # Parse subnet prefix (e.g., "10.0.0.0/24")
-                            subnet_addr, subnet_mask = subnet_prefix.split('/')
-                            subnet_mask = int(subnet_mask)
-                            
-                            # Parse subnet address
-                            subnet_parts = subnet_addr.split('.')
-                            if len(subnet_parts) != 4:
-                                return False
-                                
-                            # Convert subnet to integer
-                            subnet_int = (int(subnet_parts[0]) << 24) + (int(subnet_parts[1]) << 16) + \
-                                        (int(subnet_parts[2]) << 8) + int(subnet_parts[3])
-                                        
-                            # Calculate mask
-                            mask_int = (0xFFFFFFFF << (32 - subnet_mask)) & 0xFFFFFFFF
-                            
-                            # Check if IP is in subnet
-                            return (ip_int & mask_int) == (subnet_int & mask_int)
-                        except (ValueError, IndexError):
-                            return False
-                    
-                    # Process subnets
-                    matching_subnets = []
-                    
-                    if response.data:
-                        all_subnets = response.data
-                        save_json(all_subnets, os.path.join(self.output_dir, "all_subnets.json"))
-                        
-                        # Find subnets that contain this IP
-                        for subnet in all_subnets:
-                            subnet_prefix = subnet.get('subnetPrefix')
-                            
-                            # Handle case where subnet prefix is an array
-                            if isinstance(subnet_prefix, list):
-                                for prefix in subnet_prefix:
-                                    if ip_in_subnet(self.target_ip, prefix):
-                                        matching_subnets.append(subnet)
-                                        break
-                            else:
-                                if ip_in_subnet(self.target_ip, subnet_prefix):
-                                    matching_subnets.append(subnet)
-                        
-                        # Save matching subnets
-                        if matching_subnets:
-                            save_json(matching_subnets, os.path.join(self.output_dir, "matching_subnets.json"))
-                            print_success(f"Found {len(matching_subnets)} subnets that contain IP {self.target_ip}")
-                            
-                            # Generate CSV for matching subnets
-                            if matching_subnets:
-                                headers = ["vnetName", "subnetName", "subnetPrefix", "subnetId", "nsgId", "resourceGroup"]
-                                save_csv(matching_subnets, 
-                                        os.path.join(self.output_dir, "matching_subnets.csv"),
-                                        headers)
-                            
-                            # Extract NSG IDs from matching subnets
-                            nsg_ids = []
-                            for subnet in matching_subnets:
-                                nsg_id = subnet.get('nsgId')
-                                if nsg_id and nsg_id not in nsg_ids:
-                                    nsg_ids.append(nsg_id)
-                            
-                            if nsg_ids:
-                                print_success(f"Found {len(nsg_ids)} NSGs associated with subnets containing this IP")
-                                # Store for later use in find_flow_logs
-                                self.subnet_nsg_ids = nsg_ids
-                        else:
-                            print_warning(f"No subnets found that contain IP {self.target_ip}")
-                    else:
-                        print_warning("No virtual networks found in the subscription")
-                except Exception as subnet_error:
-                    print_error(f"Error querying for subnets: {str(subnet_error)}")
-            except Exception as vnet_error:
-                print_warning(f"Error querying virtual networks: {str(vnet_error)}")
-            
-            # Find NSGs that reference this IP in their rules (as additional check)
-            print_info(f"\n[3b/5] Finding NSGs that reference IP {self.target_ip} in their rules...")
-            
-            try:
-                query = f"""
-                Resources
-                | where type =~ 'microsoft.network/networksecuritygroups'
-                | where properties.securityRules[*].properties.sourceAddressPrefix contains '{self.target_ip}'
-                    or properties.securityRules[*].properties.destinationAddressPrefix contains '{self.target_ip}'
-                | project id, name, resourceGroup, subscriptionId, location, rules=properties.securityRules
-                """
-                
-                request = QueryRequest(query=query, subscriptions=[self.subscription_id])
-                
-                try:
-                    response = graph_client.resources(request)
-                    
-                    if response.data:
-                        self.related_nsg_rules = response.data
-                        save_json(self.related_nsg_rules, os.path.join(self.output_dir, "related_nsg_rules.json"))
-                        print_success(f"Found {len(self.related_nsg_rules)} NSGs with rules referencing IP {self.target_ip}")
-                    else:
-                        print_warning(f"No NSGs found with rules referencing IP {self.target_ip}")
-                except Exception as nsg_query_error:
-                    print_error(f"Error querying for NSGs: {str(nsg_query_error)}")
-            except Exception as nsg_error:
-                print_warning(f"Error searching for NSG rules: {str(nsg_error)}")
-            
+            except Exception as query_error:
+                print_error(f"Error querying resources: {str(query_error)}")
+                # Try alternative method using Azure CLI
+                self._fallback_to_azure_cli()
         except Exception as e:
             print_error(f"Error finding resources: {str(e)}")
             import traceback
             traceback.print_exc()
+    
+    def _find_subnets_containing_ip(self, graph_client=None):
+        """Helper method to find subnets containing the target IP."""
+        print_info(f"Searching for subnets that contain IP {self.target_ip}...")
+        
+        # Parse the IP address to determine subnet range
+        ip_parts = self.target_ip.split('.')
+        if len(ip_parts) != 4:
+            print_error(f"Invalid IP address format: {self.target_ip}")
+            return False
+            
+        # Convert IP string to integer for subnet calculations
+        try:
+            ip_int = (int(ip_parts[0]) << 24) + (int(ip_parts[1]) << 16) + (int(ip_parts[2]) << 8) + int(ip_parts[3])
+        except ValueError:
+            print_error(f"Invalid IP address components: {self.target_ip}")
+            return False
+        
+        # Create Resource Graph client if not provided
+        if graph_client is None:
+            try:
+                from azure.mgmt.resourcegraph import ResourceGraphClient
+                from azure.mgmt.resourcegraph.models import QueryRequest
+                graph_client = ResourceGraphClient(self.credential)
+            except (ImportError, Exception) as e:
+                print_error(f"Error creating Resource Graph client: {str(e)}")
+                return False
+        
+        # Query virtual networks and their subnets
+        try:
+            query = """
+            Resources
+            | where type =~ 'microsoft.network/virtualnetworks'
+            | mv-expand subnet=properties.subnets
+            | project vnetName=name, vnetId=id, subnetName=subnet.name, 
+                     subnetPrefix=subnet.properties.addressPrefix,
+                     subnetId=subnet.id, 
+                     nsgId=subnet.properties.networkSecurityGroup.id,
+                     resourceGroup, subscriptionId, location
+            """
+            
+            request = QueryRequest(query=query, subscriptions=[self.subscription_id])
+            response = graph_client.resources(request)
+            
+            # Function to check if IP is in subnet
+            def ip_in_subnet(ip_addr, subnet_prefix):
+                try:
+                    subnet_addr, subnet_mask = subnet_prefix.split('/')
+                    subnet_mask = int(subnet_mask)
+                    
+                    subnet_parts = subnet_addr.split('.')
+                    if len(subnet_parts) != 4:
+                        return False
+                        
+                    subnet_int = (int(subnet_parts[0]) << 24) + (int(subnet_parts[1]) << 16) + \
+                                 (int(subnet_parts[2]) << 8) + int(subnet_parts[3])
+                                 
+                    mask_int = (0xFFFFFFFF << (32 - subnet_mask)) & 0xFFFFFFFF
+                    
+                    return (ip_int & mask_int) == (subnet_int & mask_int)
+                except:
+                    return False
+            
+            # Process subnets
+            matching_subnets = []
+            nsg_ids = []
+            
+            if response.data:
+                all_subnets = response.data
+                
+                # Find subnets that contain this IP
+                for subnet in all_subnets:
+                    subnet_prefix = subnet.get('subnetPrefix')
+                    
+                    # Handle case where subnet prefix is an array
+                    if isinstance(subnet_prefix, list):
+                        for prefix in subnet_prefix:
+                            if ip_in_subnet(self.target_ip, prefix):
+                                matching_subnets.append(subnet)
+                                break
+                    else:
+                        if subnet_prefix and ip_in_subnet(self.target_ip, subnet_prefix):
+                            matching_subnets.append(subnet)
+                
+                # Save matching subnets
+                if matching_subnets:
+                    save_json(matching_subnets, os.path.join(self.output_dir, "matching_subnets.json"))
+                    print_success(f"Found {len(matching_subnets)} subnets that contain IP {self.target_ip}")
+                    
+                    # Extract NSG IDs from matching subnets
+                    for subnet in matching_subnets:
+                        nsg_id = subnet.get('nsgId')
+                        if nsg_id and nsg_id not in nsg_ids:
+                            nsg_ids.append(nsg_id)
+                    
+                    if nsg_ids:
+                        print_success(f"Found {len(nsg_ids)} NSGs associated with subnets containing this IP")
+                        # Store for later use in find_flow_logs
+                        self.subnet_nsg_ids = nsg_ids
+                        self.find_flow_logs()
+                        return True
+                    else:
+                        print_warning("No NSGs found for matching subnets")
+                else:
+                    print_warning(f"No subnets found that contain IP {self.target_ip}")
+            else:
+                print_warning("No virtual networks found in the subscription")
+            
+            return False
+        except Exception as e:
+            print_error(f"Error finding subnets: {str(e)}")
+            return False
+    
+    def _fallback_to_azure_cli(self):
+        """Fallback method using Azure CLI when Resource Graph queries fail."""
+        print_info("Attempting to use Azure CLI directly...")
+        import subprocess
+        import json
+        
+        # 1. Query network interfaces with this IP
+        print_info(f"Querying for network interfaces with IP {self.target_ip} using Azure CLI...")
+        cmd = f"az graph query -q \"Resources | where type =~ 'microsoft.network/networkinterfaces' | where properties.ipConfigurations[0].properties.privateIPAddress =~ '{self.target_ip}' | project id, name, resourceGroup, subscriptionId, location, vnetId = tostring(properties.ipConfigurations[0].properties.subnet.id), nsgId = tostring(properties.networkSecurityGroup.id)\" --query \"data\" -o json"
+        
+        try:
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, check=False)
+            if result.returncode == 0 and result.stdout.strip():
+                self.associated_resources = json.loads(result.stdout)
+                save_json(self.associated_resources, os.path.join(self.output_dir, "associated_resources.json"))
+                print_success(f"Found {len(self.associated_resources)} resources with IP {self.target_ip} (using CLI)")
+                
+                # Extract NSG IDs
+                nsg_ids = []
+                for resource in self.associated_resources:
+                    nsg_id = resource.get('nsgId')
+                    if nsg_id and nsg_id not in nsg_ids:
+                        nsg_ids.append(nsg_id)
+                
+                if nsg_ids:
+                    self.subnet_nsg_ids = nsg_ids
+                    print_success(f"Found {len(nsg_ids)} associated NSGs")
+                    self.find_flow_logs()
+                    return True
+                else:
+                    # If no NSGs found directly with NIC, try to find subnets
+                    print_warning("No NSGs directly associated with network interface, trying to find subnet NSGs...")
+                    self._find_subnets_cli()
+            else:
+                print_warning(f"No resources with IP {self.target_ip} found using Azure CLI")
+                self._find_subnets_cli()
+                
+        except Exception as cli_error:
+            print_error(f"Error using Azure CLI: {str(cli_error)}")
+            return False
+    
+    def _find_subnets_cli(self):
+        """Find subnets containing the target IP using Azure CLI."""
+        print_info(f"Finding subnets containing IP {self.target_ip} using Azure CLI...")
+        import subprocess
+        import json
+        
+        try:
+            # First get all VNETs
+            cmd_vnets = "az graph query -q \"Resources | where type =~ 'microsoft.network/virtualnetworks' | project id, name, resourceGroup, properties.subnets\" --query \"data\" -o json"
+            result = subprocess.run(cmd_vnets, shell=True, capture_output=True, text=True, check=False)
+            
+            if result.returncode == 0 and result.stdout.strip():
+                vnets = json.loads(result.stdout)
+                
+                # Parse IP to components for subnet check
+                ip_parts = self.target_ip.split('.')
+                if len(ip_parts) != 4:
+                    print_error(f"Invalid IP address format: {self.target_ip}")
+                    return False
+                
+                ip_int = (int(ip_parts[0]) << 24) + (int(ip_parts[1]) << 16) + (int(ip_parts[2]) << 8) + int(ip_parts[3])
+                
+                # Function to check if IP is in subnet
+                def ip_in_subnet(ip_addr, subnet_prefix):
+                    try:
+                        subnet_addr, subnet_mask = subnet_prefix.split('/')
+                        subnet_mask = int(subnet_mask)
+                        
+                        subnet_parts = subnet_addr.split('.')
+                        if len(subnet_parts) != 4:
+                            return False
+                            
+                        subnet_int = (int(subnet_parts[0]) << 24) + (int(subnet_parts[1]) << 16) + \
+                                     (int(subnet_parts[2]) << 8) + int(subnet_parts[3])
+                                     
+                        mask_int = (0xFFFFFFFF << (32 - subnet_mask)) & 0xFFFFFFFF
+                        
+                        return (ip_int & mask_int) == (subnet_int & mask_int)
+                    except:
+                        return False
+                
+                matching_subnets = []
+                nsg_ids = []
+                
+                for vnet in vnets:
+                    subnets = vnet.get('properties.subnets', [])
+                    for subnet in subnets:
+                        prefix = subnet.get('properties', {}).get('addressPrefix')
+                        if prefix and ip_in_subnet(self.target_ip, prefix):
+                            matching_subnets.append({
+                                'vnetName': vnet.get('name'),
+                                'vnetId': vnet.get('id'),
+                                'subnetName': subnet.get('name'),
+                                'subnetPrefix': prefix,
+                                'subnetId': subnet.get('id'),
+                                'nsgId': subnet.get('properties', {}).get('networkSecurityGroup', {}).get('id')
+                            })
+                            
+                            nsg_id = subnet.get('properties', {}).get('networkSecurityGroup', {}).get('id')
+                            if nsg_id and nsg_id not in nsg_ids:
+                                nsg_ids.append(nsg_id)
+                
+                if matching_subnets:
+                    save_json(matching_subnets, os.path.join(self.output_dir, "matching_subnets.json"))
+                    print_success(f"Found {len(matching_subnets)} subnets containing IP {self.target_ip} (using CLI)")
+                    
+                    if nsg_ids:
+                        self.subnet_nsg_ids = nsg_ids
+                        print_success(f"Found {len(nsg_ids)} NSGs associated with subnets (using CLI)")
+                        self.find_flow_logs()
+                        return True
+                    else:
+                        print_warning("No NSGs found for matching subnets")
+                else:
+                    print_warning(f"No subnets found containing IP {self.target_ip} (using CLI)")
+            else:
+                print_warning("Failed to retrieve virtual networks (using CLI)")
+                
+            return False
+        except Exception as e:
+            print_error(f"Error finding subnets using CLI: {str(e)}")
+            return False
 
     def find_flow_logs(self) -> None:
         """Find NSG flow logs for relevant NSGs."""
