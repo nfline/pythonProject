@@ -544,39 +544,35 @@ search *
 
 def generate_simple_kql_query(target_ip: str, time_range_hours: int = 24) -> str:
     """Generate a simple KQL query without NSG filtering"""
-    
-    # 使用timezone-aware对象获取UTC时间
     end_time = datetime.now(timezone.utc)
     start_time = end_time - timedelta(hours=time_range_hours)
     
-    # Format times for KQL query - exactly as shown in screenshot
     start_time_str = start_time.strftime("%Y-%m-%dT%H:%M:%S.%f")[:23] + "Z"
     end_time_str = end_time.strftime("%Y-%m-%dT%H:%M:%S.%f")[:23] + "Z"
     
-    # 修改后的KQL查询 - 添加注释以便排查，确保与截图格式一致
+    # Updated KQL query format
     query = f"""
-// KQL查询参数: IP={target_ip}, 时间范围={time_range_hours}小时
-// 使用union操作符确保兼容性
+// KQL Query Parameters: IP={target_ip}, Time Range={time_range_hours} hours
 union 
 (AzureNetworkAnalytics_CL
 | where TimeGenerated between (datetime({start_time_str}) .. datetime({end_time_str}))
-| where FlowStatus_s == "A" 
+| where FlowStatus_s == "A"
 | where SrcIP_s == "{target_ip}" or DestIP_s == "{target_ip}"),
-(NetworkMonitoring 
+(NetworkMonitoring
 | where TimeGenerated between (datetime({start_time_str}) .. datetime({end_time_str}))
 | where SrcIP == "{target_ip}" or DestIP == "{target_ip}")
 | project 
-  TimeGenerated,
-  FlowDirection_s = column_ifexists("FlowDirection_s", ""),
-  SrcIP_s = column_ifexists("SrcIP_s", column_ifexists("SrcIP", "")),
-  DestIP_s = column_ifexists("DestIP_s", column_ifexists("DestIP", "")),
-  SrcPort_d = column_ifexists("SrcPort_d", column_ifexists("SrcPort", 0)),
-  DestPort_d = column_ifexists("DestPort_d", column_ifexists("DestPort", 0)),
-  Protocol_s = column_ifexists("Protocol_s", column_ifexists("Protocol", "")),
-  FlowStatus_s = column_ifexists("FlowStatus_s", ""),
-  L7Protocol_s = column_ifexists("L7Protocol_s", ""),
-  InboundBytes_d = column_ifexists("InboundBytes_d", 0),
-  OutboundBytes_d = column_ifexists("OutboundBytes_d", 0)
+    TimeGenerated,
+    FlowDirection_s = column_ifexists("FlowDirection_s", ""),
+    SrcIP_s = column_ifexists("SrcIP_s", column_ifexists("SrcIP", "")),
+    DestIP_s = column_ifexists("DestIP_s", column_ifexists("DestIP", "")),
+    SrcPort_d = column_ifexists("SrcPort_d", column_ifexists("SrcPort", 0)),
+    DestPort_d = column_ifexists("DestPort_d", column_ifexists("DestPort", 0)),
+    Protocol_s = column_ifexists("Protocol_s", column_ifexists("Protocol", "")),
+    FlowStatus_s = column_ifexists("FlowStatus_s", ""),
+    L7Protocol_s = column_ifexists("L7Protocol_s", ""),
+    InboundBytes_d = column_ifexists("InboundBytes_d", 0),
+    OutboundBytes_d = column_ifexists("OutboundBytes_d", 0)
 | sort by TimeGenerated desc
 | limit 100
 """
@@ -588,93 +584,64 @@ def generate_kql_query(target_ip: str,
                       time_range_hours: int = 24,
                       filter_by_nsg: bool = True) -> Dict[str, str]:
     """Generate KQL queries for each workspace"""
-    print_info("\nStep 6: Generating KQL queries...")
     output_dir = "output"
     os.makedirs(output_dir, exist_ok=True)
     
     kql_queries = {}
-    
-    # 使用timezone-aware对象获取UTC时间
     end_time = datetime.now(timezone.utc)
     start_time = end_time - timedelta(hours=time_range_hours)
     
-    # Format times for KQL query - exactly as shown in screenshot
     start_time_str = start_time.strftime("%Y-%m-%dT%H:%M:%S.%f")[:23] + "Z"
     end_time_str = end_time.strftime("%Y-%m-%dT%H:%M:%S.%f")[:23] + "Z"
     
-    # Create a mapping of workspace ID to NSG IDs
     workspace_to_nsgs = {}
     for nsg_id, workspace_id in workspace_ids.items():
         if workspace_id not in workspace_to_nsgs:
             workspace_to_nsgs[workspace_id] = []
         workspace_to_nsgs[workspace_id].append(nsg_id)
     
-    # Generate KQL query for each workspace
     for workspace_id, nsg_ids in workspace_to_nsgs.items():
-        # Create NSG filter condition if needed
         nsg_filter = ""
         nsg_names_str = ""
         if filter_by_nsg and nsg_ids:
-            nsg_names = []
-            for nsg_id in nsg_ids:
-                nsg_name = nsg_id.split('/')[-1]
-                nsg_names.append(nsg_name)
-            
-            # Only add NSG filter if we have NSGs to filter
+            nsg_names = [nsg_id.split('/')[-1] for nsg_id in nsg_ids]
             if nsg_names:
                 nsg_names_str = ", ".join([f'"{name}"' for name in nsg_names])
-                # 修改NSG过滤语法，使用column_ifexists处理可能不存在的字段
                 nsg_filter = f"| where column_ifexists(\"NSGName_s\", \"\") in~ ({nsg_names_str})\n"
         
-        # 修改后的KQL查询 - 添加注释以便排查，确保与截图格式一致
         query = f"""
-// KQL查询参数: IP={target_ip}, 时间范围={time_range_hours}小时, NSG过滤={nsg_names_str}
-// 使用union操作符确保兼容性
+// KQL Query Parameters: IP={target_ip}, Time Range={time_range_hours} hours, NSG Filter={nsg_names_str}
 union 
 (AzureNetworkAnalytics_CL
 | where TimeGenerated between (datetime({start_time_str}) .. datetime({end_time_str}))
-| where FlowStatus_s == "A" 
+| where FlowStatus_s == "A"
 | where SrcIP_s == "{target_ip}" or DestIP_s == "{target_ip}"),
-(NetworkMonitoring 
+(NetworkMonitoring
 | where TimeGenerated between (datetime({start_time_str}) .. datetime({end_time_str}))
 | where SrcIP == "{target_ip}" or DestIP == "{target_ip}")
 {nsg_filter}| project 
-  TimeGenerated,
-  FlowDirection_s = column_ifexists("FlowDirection_s", ""),
-  SrcIP_s = column_ifexists("SrcIP_s", column_ifexists("SrcIP", "")),
-  DestIP_s = column_ifexists("DestIP_s", column_ifexists("DestIP", "")),
-  SrcPort_d = column_ifexists("SrcPort_d", column_ifexists("SrcPort", 0)),
-  DestPort_d = column_ifexists("DestPort_d", column_ifexists("DestPort", 0)),
-  Protocol_s = column_ifexists("Protocol_s", column_ifexists("Protocol", "")),
-  FlowStatus_s = column_ifexists("FlowStatus_s", ""),
-  L7Protocol_s = column_ifexists("L7Protocol_s", ""),
-  InboundBytes_d = column_ifexists("InboundBytes_d", 0),
-  OutboundBytes_d = column_ifexists("OutboundBytes_d", 0)
+    TimeGenerated,
+    FlowDirection_s = column_ifexists("FlowDirection_s", ""),
+    SrcIP_s = column_ifexists("SrcIP_s", column_ifexists("SrcIP", "")),
+    DestIP_s = column_ifexists("DestIP_s", column_ifexists("DestIP", "")),
+    SrcPort_d = column_ifexists("SrcPort_d", column_ifexists("SrcPort", 0)),
+    DestPort_d = column_ifexists("DestPort_d", column_ifexists("DestPort", 0)),
+    Protocol_s = column_ifexists("Protocol_s", column_ifexists("Protocol", "")),
+    FlowStatus_s = column_ifexists("FlowStatus_s", ""),
+    L7Protocol_s = column_ifexists("L7Protocol_s", ""),
+    InboundBytes_d = column_ifexists("InboundBytes_d", 0),
+    OutboundBytes_d = column_ifexists("OutboundBytes_d", 0)
 | sort by TimeGenerated desc
 | limit 100
 """
-        
-        # Create a short name for the workspace for filename
         workspace_short_id = workspace_id.split('/')[-1] if '/' in workspace_id else workspace_id
-        
-        # Save the query to a file
         query_filename = f"kql_query_{workspace_short_id}.kql"
         query_path = os.path.join(output_dir, query_filename)
         
         with open(query_path, 'w', encoding='utf-8') as f:
             f.write(query)
         
-        print_success(f"Generated KQL query and saved to {query_path}")
-        
-        # Add query to return dictionary
         kql_queries[workspace_id] = query
-    
-    # Save all queries
-    if kql_queries:
-        save_json({k: v for k, v in kql_queries.items()}, os.path.join(output_dir, "kql_queries.json"))
-        print_success(f"Generated a total of {len(kql_queries)} KQL queries")
-    else:
-        print_warning("Could not generate any KQL queries")
     
     return kql_queries
 
