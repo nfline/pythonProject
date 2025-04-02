@@ -313,234 +313,214 @@ def get_log_analytics_workspaces(flow_logs_config: Dict[str, Dict]) -> Dict[str,
     return workspace_ids
 
 def execute_kql_query(workspace_id: str, kql_query: str, timeout_seconds: int = 60) -> Optional[Dict]:
-    """Execute a KQL query against a Log Analytics workspace"""
-    print_info(f"\nExecuting KQL query against workspace: {workspace_id}")
-    
-    # Format the query to ensure it's properly escaped
-    # Remove any leading/trailing whitespace and newlines
-    kql_query = kql_query.strip()
-    
-    # Make sure workspace ID is properly formatted
-    if '/' in workspace_id:  # If it's a full resource ID
-        # Extract just the workspace ID part at the end
-        workspace_id = workspace_id.split('/')[-1]
-    
-    # Handle timespan parameter - use PT format for Azure CLI
-    # PT60M = 60 minutes format required by Azure
-    timespan_param = f"PT{timeout_seconds}M"
-    
-    # Create a temporary file with the query to avoid command line length issues
-    temp_query_file = os.path.join("output", "temp_query.kql")
-    os.makedirs("output", exist_ok=True)
-    with open(temp_query_file, 'w', encoding='utf-8') as f:
-        f.write(kql_query)
-    
-    # Log query details to log file for troubleshooting
-    log_file = os.path.join("output", "kql_commands.log")
-    with open(log_file, 'a') as f:
-        f.write(f"\n\n--- QUERY EXECUTION: {datetime.now(timezone.utc)} ---\n")
-        f.write(f"Workspace ID: {workspace_id}\n")
-        f.write(f"Timespan: {timespan_param}\n")
-        f.write(f"Query:\n{kql_query}\n")
-    
-    # Construct Azure CLI command with proper parameters
-    # Use --query parameter to process results properly
-    cmd = f"az monitor log-analytics query --workspace {workspace_id} --analytics-query \"@{temp_query_file}\" --timespan {timespan_param} -o json"
-    
-    print_info(f"Query command: {cmd}")
-    # Log complete command to log file
-    with open(log_file, 'a') as f:
-        f.write(f"Command: {cmd}\n")
-    
-    # Execute the query with extended timeout
-    try:
-        process = subprocess.Popen(
-            cmd, 
-            shell=True, 
-            stdout=subprocess.PIPE, 
-            stderr=subprocess.PIPE,
-            text=True
-        )
-        
-        # Wait with timeout (3x the query timeout to allow for processing)
-        stdout, stderr = process.communicate(timeout=timeout_seconds * 3)
-        
-        # Log output results to log file
-        with open(log_file, 'a') as f:
-            f.write(f"ReturnCode: {process.returncode}\n")
-            f.write(f"StdErr: {stderr}\n")
-            if len(stdout) > 1000:
-                f.write(f"StdOut (truncated): {stdout[:1000]}...\n")
-            else:
-                f.write(f"StdOut: {stdout}\n")
-        
-        if process.returncode != 0:
-            # Check if it's a response size error
-            if "ResponseSizeError" in stderr or "Response size too large" in stderr:
-                print_error("Query result exceeded maximum size limit. Trying with more restrictive filters...")
-                
-                # Create a more restrictive query by adding time constraints or reducing limit
-                if "limit" in kql_query.lower():
-                    # Reduce the limit if it exists
-                    current_limit = int(re.search(r'limit\s+(\d+)', kql_query.lower()).group(1))
-                    new_limit = max(10, current_limit // 10)  # Reduce by factor of 10, but minimum 10
-                    new_query = re.sub(r'limit\s+\d+', f'limit {new_limit}', kql_query)
-                else:
-                    # Add a limit if it doesn't exist
-                    new_query = kql_query + "\n| limit 20"
-                
-                print_info(f"Retrying with more restrictive query (limit reduced)")
-                with open(temp_query_file, 'w', encoding='utf-8') as f:
-                    f.write(new_query)
-                
-                # Log retry information
-                with open(log_file, 'a') as f:
-                    f.write(f"Retrying with reduced limit. New query:\n{new_query}\n")
-                
-                # Try again with the more restrictive query
-                retry_cmd = f"az monitor log-analytics query --workspace {workspace_id} --analytics-query \"@{temp_query_file}\" --timespan {timespan_param} -o json"
-                retry_process = subprocess.Popen(
-                    retry_cmd,
-                    shell=True,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True
-                )
-                stdout, stderr = retry_process.communicate(timeout=timeout_seconds * 3)
-                
-                # Log retry results
-                with open(log_file, 'a') as f:
-                    f.write(f"Retry ReturnCode: {retry_process.returncode}\n")
-                    f.write(f"Retry StdErr: {stderr}\n")
-                    if len(stdout) > 1000:
-                        f.write(f"Retry StdOut (truncated): {stdout[:1000]}...\n")
-                    else:
-                        f.write(f"Retry StdOut: {stdout}\n")
-                
-                if retry_process.returncode != 0:
-                    # Handle semantic error
-                    if "SemanticError" in stderr:
-                        print_error(f"Semantic error: Table or field may not exist. See log file for details: {log_file}")
-                        # Try simple query to check table existence
-                        simplest_query = """
-    // Check table existence
-    search "AzureNetworkAnalytics_CL" or "NetworkMonitoring"
-| limit 5
-"""
-                        with open(temp_query_file, 'w', encoding='utf-8') as f:
-                            f.write(simplest_query)
-                            
-                        with open(log_file, 'a') as f:
-                            f.write(f"Attempting simplest query to check table existence:\n{simplest_query}\n")
-                            
-                        check_cmd = f"az monitor log-analytics query --workspace {workspace_id} --analytics-query \"@{temp_query_file}\" --timespan {timespan_param} -o json"
-                        check_process = subprocess.Popen(
-                            check_cmd,
-                            shell=True,
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE,
-                            text=True
-                        )
-                        check_stdout, check_stderr = check_process.communicate(timeout=timeout_seconds * 3)
-                        
-                        with open(log_file, 'a') as f:
-                            f.write(f"Check ReturnCode: {check_process.returncode}\n")
-                            f.write(f"Check StdErr: {check_stderr}\n")
-                            f.write(f"Check StdOut: {check_stdout}\n")
-                    
-                    print_error(f"Retry query failed: {stderr}")
-                    return None
-            elif "SemanticError" in stderr:
-                print_error(f"Semantic error: Table or field may not exist")
-                # Log error details
-                with open(log_file, 'a') as f:
-                    f.write(f"SemanticError details: {stderr}\n")
-                
-                # Try to find available tables
-                table_query = """
-// Check available tables
-search *
-| summarize count() by $table
-| order by count_ desc
-| limit 10
-"""
-                with open(temp_query_file, 'w', encoding='utf-8') as f:
-                    f.write(table_query)
-                    
-                with open(log_file, 'a') as f:
-                    f.write(f"Attempting to find available tables:\n{table_query}\n")
-                    
-                table_cmd = f"az monitor log-analytics query --workspace {workspace_id} --analytics-query \"@{temp_query_file}\" --timespan {timespan_param} -o json"
-                table_process = subprocess.Popen(
-                    table_cmd,
-                    shell=True,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True
-                )
-                table_stdout, table_stderr = table_process.communicate(timeout=timeout_seconds * 3)
-                
-                with open(log_file, 'a') as f:
-                    f.write(f"Table search ReturnCode: {table_process.returncode}\n")
-                    f.write(f"Table search StdErr: {table_stderr}\n")
-                    if table_stdout.strip():
-                        f.write(f"Available tables: {table_stdout}\n")
-                
-                return None
-            else:
-                print_error(f"Query execution failed: {stderr}")
-                return None
-        
-        if not stdout.strip():
-            print_warning("Query executed successfully but returned no data")
-            return []
-        
-        try:
-            results = json.loads(stdout)
-            if not results:
-                print_warning("Query returned empty results")
-                return []
-            
-            # Save results
-            output_dir = "output"
-            os.makedirs(output_dir, exist_ok=True)
-            
-            workspace_short_id = workspace_id.split('/')[-1] if '/' in workspace_id else workspace_id
-            result_path = os.path.join(output_dir, f"query_results_{workspace_short_id}.json")
-            
-            save_json(results, result_path)
-            print_success(f"Query results saved to {result_path}")
-            
-            # Print summary
-            result_count = len(results) if isinstance(results, list) else 0
-            print_success(f"Query returned {result_count} records")
-            
-            if result_count > 0:
-                print_info("Sample records:")
-                sample_size = min(3, result_count)
-                for i in range(sample_size):
-                    print(json.dumps(results[i], indent=2))
-                    if i < sample_size - 1:
-                        print("---")
-            
-            return results
-        except json.JSONDecodeError as e:
-            print_error(f"Failed to parse query results: {e}")
-            print_info(f"Raw output: {stdout[:500]}...")
-            return None
-    except subprocess.TimeoutExpired:
-        print_error(f"Query execution timed out after {timeout_seconds*3} seconds")
-        return None
-    except Exception as e:
-        print_error(f"Error executing query: {str(e)}")
-        return None
-    finally:
-        # Clean up temporary file
-        if os.path.exists(temp_query_file):
-            try:
-                os.remove(temp_query_file)
-            except:
-                pass
+     """Execute a KQL query against a Log Analytics workspace"""
+     print_info(f"\nExecuting KQL query against workspace: {workspace_id}")
+ 
+     # Format the query to ensure it's properly escaped
+     # Remove any leading/trailing whitespace and newlines
+     kql_query = kql_query.strip()
+ 
+     # Make sure workspace ID is properly formatted
+     if '/' in workspace_id:  # If it's a full resource ID
+         # Extract just the workspace ID part at the end
+         workspace_id = workspace_id.split('/')[-1]
+ 
+     # Handle timespan parameter - use PT format for Azure CLI
+     # PT<minutes>M format required by Azure CLI, adjust based on timeout_seconds
+     # Ensure minimum 1 minute timespan for the parameter format
+     timespan_minutes = max(1, timeout_seconds // 60)
+     timespan_param = f"PT{timespan_minutes}M"
+ 
+     # Create a temporary file with the query to avoid command line length issues
+     temp_query_file = os.path.join("output", f"temp_query_{workspace_id}.kql")
+     os.makedirs("output", exist_ok=True)
+     try:
+         with open(temp_query_file, 'w', encoding='utf-8') as f:
+             f.write(kql_query)
+     except IOError as e:
+         print_error(f"Failed to write temporary query file {temp_query_file}: {e}")
+         return None
+ 
+     # Log query details to log file for troubleshooting
+     log_file = os.path.join("output", "kql_commands.log")
+     try:
+         with open(log_file, 'a') as f:
+             f.write(f"\n\n--- QUERY EXECUTION: {datetime.now(timezone.utc)} ---\n")
+             f.write(f"Workspace ID: {workspace_id}\n")
+             f.write(f"Timespan Param: {timespan_param}\n") # Log the parameter used
+             f.write(f"Timeout Seconds: {timeout_seconds}\n")
+             f.write(f"Query File: {temp_query_file}\n")
+             f.write(f"Query Content:\n{kql_query}\n")
+     except IOError as e:
+         print_warning(f"Could not write to log file {log_file}: {e}")
+ 
+ 
+     # Construct Azure CLI command with proper parameters
+     # Using @file syntax is generally robust against shell quoting issues
+     cmd = f"az monitor log-analytics query --workspace {workspace_id} --analytics-query \"@{temp_query_file}\" --timespan {timespan_param} -o json"
+ 
+     print_info(f"Query command: az monitor log-analytics query --workspace {workspace_id} --analytics-query \"@{temp_query_file}\" --timespan {timespan_param} ...") # Avoid printing full command if too long
+     # Log complete command to log file
+     try:
+         with open(log_file, 'a') as f:
+             f.write(f"Command: {cmd}\n")
+     except IOError as e:
+         print_warning(f"Could not write command to log file {log_file}: {e}")
+ 
+     # Execute the query with extended timeout
+     stdout, stderr = "", ""
+     process = None
+     try:
+         process = subprocess.Popen(
+             cmd,
+             shell=True, # shell=True is often needed for complex az cli commands, especially with @file
+             stdout=subprocess.PIPE,
+             stderr=subprocess.PIPE,
+             text=True,
+             encoding='utf-8' # Specify encoding
+         )
+ 
+         # Wait with timeout (allow ample time, e.g., 3x query timeout + buffer)
+         stdout, stderr = process.communicate(timeout=timeout_seconds * 3 + 30) # Added buffer
+ 
+         # Log output results to log file
+         try:
+             with open(log_file, 'a') as f:
+                 f.write(f"ReturnCode: {process.returncode}\n")
+                 f.write(f"StdErr: {stderr}\n")
+                 # Avoid logging excessively large stdout
+                 stdout_preview = stdout[:2000] + ('...' if len(stdout) > 2000 else '')
+                 f.write(f"StdOut Preview: {stdout_preview}\n")
+         except IOError as e:
+             print_warning(f"Could not write results to log file {log_file}: {e}")
+ 
+ 
+         if process.returncode != 0:
+             # Check for specific common errors first
+             if "ResponseSizeError" in stderr or "Response size too large" in stderr:
+                 print_error("Query result exceeded maximum size limit. Consider reducing the time range or adding more filters.")
+                 # Log this specific error
+                 try:
+                     with open(log_file, 'a') as f: f.write("Error Type: ResponseSizeError\n")
+                 except IOError: pass
+                 # Note: Retrying with smaller limit is complex and might hide the real issue.
+                 # Better to inform the user to refine the query/time range.
+                 return None # Stop execution for this query
+ 
+             elif "SemanticError" in stderr:
+                 error_detail = stderr # Capture the full error
+                 print_error(f"KQL Semantic Error: Table or field name likely incorrect for workspace '{workspace_id}'.")
+                 print_error("Please check the KQL query and verify table/field names (e.g., AzureNetworkAnalytics_CL, NetworkMonitoring, SrcIP_s) exist in this workspace.")
+                 print_error(f"See details in log file: {log_file}")
+                 # Log the detailed error
+                 try:
+                     with open(log_file, 'a') as f:
+                         f.write(f"Error Type: SemanticError\n")
+                         f.write(f"SemanticError Detail: {error_detail}\n")
+                 except IOError: pass
+                 # Attempting to find tables might fail if the initial query already failed semantically.
+                 # Focus on informing the user.
+                 return None # Stop execution for this query
+ 
+             elif "AuthenticationFailed" in stderr or "AuthorizationFailed" in stderr:
+                  print_error(f"Authentication/Authorization Failed for workspace '{workspace_id}'. Check Azure login and permissions.")
+                  print_error(f"See details in log file: {log_file}")
+                  try:
+                      with open(log_file, 'a') as f: f.write("Error Type: Authentication/Authorization Failed\n")
+                  except IOError: pass
+                  return None
+ 
+             else:
+                 # Generic error
+                 print_error(f"Query execution failed with return code {process.returncode}.")
+                 print_error(f"Stderr: {stderr}")
+                 print_error(f"See details in log file: {log_file}")
+                 return None
+ 
+         # Check if stdout is empty even on success
+         if not stdout or not stdout.strip():
+             print_warning("Query executed successfully but returned no data.")
+             return {"tables": []} # Return structure expected by downstream processing
+ 
+         # Try parsing the JSON result
+         try:
+             results = json.loads(stdout)
+             # Basic validation of expected structure (adjust if needed)
+             if not isinstance(results, dict) or 'tables' not in results:
+                  print_warning(f"Query returned unexpected JSON structure. Raw output saved.")
+                  # Save raw output for debugging
+                  raw_output_path = os.path.join("output", f"query_results_{workspace_id}_raw.txt")
+                  try:
+                      with open(raw_output_path, 'w', encoding='utf-8') as rf: rf.write(stdout)
+                      print_info(f"Raw output saved to {raw_output_path}")
+                  except IOError as e:
+                      print_warning(f"Could not save raw output: {e}")
+                  return {"tables": []} # Return empty structure
+ 
+             # Save results
+             output_dir = "output"
+             # No need for os.makedirs here, already done above
+ 
+             workspace_short_id = workspace_id.split('/')[-1] if '/' in workspace_id else workspace_id
+             result_path = os.path.join(output_dir, f"query_results_{workspace_short_id}.json")
+ 
+             save_json(results, result_path) # Use the existing save_json function
+             # print_success(f"Query results saved to {result_path}") # save_json already prints
+ 
+             # Print summary
+             result_count = 0
+             if isinstance(results.get('tables'), list) and len(results['tables']) > 0 and isinstance(results['tables'][0].get('rows'), list):
+                 result_count = len(results['tables'][0]['rows'])
+ 
+             print_success(f"Query returned {result_count} records.")
+ 
+             # Print sample records (if any)
+             if result_count > 0:
+                 print_info("Sample records (up to 3):")
+                 sample_size = min(3, result_count)
+                 columns = [col['name'] for col in results['tables'][0]['columns']]
+                 for i in range(sample_size):
+                     row_data = dict(zip(columns, results['tables'][0]['rows'][i]))
+                     print(json.dumps(row_data, indent=2))
+                     if i < sample_size - 1:
+                         print("---")
+ 
+             return results # Return the parsed results
+ 
+         except json.JSONDecodeError as e:
+             print_error(f"Failed to parse query results as JSON: {e}")
+             print_info(f"Raw output preview: {stdout[:500]}...")
+             # Save raw output for debugging
+             raw_output_path = os.path.join("output", f"query_results_{workspace_id}_raw.txt")
+             try:
+                 with open(raw_output_path, 'w', encoding='utf-8') as rf: rf.write(stdout)
+                 print_info(f"Raw output saved to {raw_output_path}")
+             except IOError as ioe:
+                 print_warning(f"Could not save raw output: {ioe}")
+             return None # Indicate failure
+ 
+     except subprocess.TimeoutExpired:
+         print_error(f"Query execution timed out after {timeout_seconds*3 + 30} seconds for workspace {workspace_id}.")
+         if process: process.kill() # Ensure the process is terminated
+         try:
+             with open(log_file, 'a') as f: f.write("Error Type: TimeoutExpired\n")
+         except IOError: pass
+         return None
+     except Exception as e:
+         print_error(f"An unexpected error occurred during query execution: {str(e)}")
+         if process: process.kill()
+         try:
+             with open(log_file, 'a') as f: f.write(f"Error Type: Unexpected Exception\nException: {str(e)}\n")
+         except IOError: pass
+         return None
+     finally:
+         # Clean up temporary file
+         if os.path.exists(temp_query_file):
+             try:
+                 os.remove(temp_query_file)
+                 # print_info(f"Cleaned up temporary file: {temp_query_file}")
+             except OSError as e:
+                 print_warning(f"Could not remove temporary file {temp_query_file}: {e}")
 
 def generate_simple_kql_query(target_ip: str, time_range_hours: int = 24) -> str:
     """Generate a simple KQL query without NSG filtering"""
