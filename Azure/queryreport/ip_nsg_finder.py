@@ -1,19 +1,10 @@
-#!/usr/bin/env python3
-"""
-ip_nsg_finder.py - Find NSGs associated with an IP address
-
-Usage: python ip_nsg_finder.py <IP_address> [--analyze] [--time-range HOURS]
-
-This script finds NSGs associated with a specified IP address,
-allowing for subsequent traffic log queries using Azure Log Analytics.
-"""
-
 import os
 import sys
 import json
 import argparse
 import subprocess
 import ipaddress
+import re
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional, Tuple
 
@@ -344,11 +335,22 @@ def execute_kql_query(workspace_id: str, kql_query: str, timeout_seconds: int = 
     with open(temp_query_file, 'w') as f:
         f.write(kql_query)
     
+    # 记录查询详情到日志文件，方便排查
+    log_file = os.path.join("output", "kql_commands.log")
+    with open(log_file, 'a') as f:
+        f.write(f"\n\n--- QUERY EXECUTION: {datetime.now()} ---\n")
+        f.write(f"Workspace ID: {workspace_id}\n")
+        f.write(f"Timespan: {timespan_param}\n")
+        f.write(f"Query:\n{kql_query}\n")
+    
     # Construct Azure CLI command with proper parameters
     # Use --query parameter to process results properly
     cmd = f"az monitor log-analytics query --workspace {workspace_id} --analytics-query \"@{temp_query_file}\" --timespan {timespan_param} -o json"
     
     print_info(f"Query command: {cmd}")
+    # 记录完整命令到日志
+    with open(log_file, 'a') as f:
+        f.write(f"Command: {cmd}\n")
     
     # Execute the query with extended timeout
     try:
@@ -362,6 +364,15 @@ def execute_kql_query(workspace_id: str, kql_query: str, timeout_seconds: int = 
         
         # Wait with timeout (3x the query timeout to allow for processing)
         stdout, stderr = process.communicate(timeout=timeout_seconds * 3)
+        
+        # 记录输出结果到日志
+        with open(log_file, 'a') as f:
+            f.write(f"ReturnCode: {process.returncode}\n")
+            f.write(f"StdErr: {stderr}\n")
+            if len(stdout) > 1000:
+                f.write(f"StdOut (truncated): {stdout[:1000]}...\n")
+            else:
+                f.write(f"StdOut: {stdout}\n")
         
         if process.returncode != 0:
             # Check if it's a response size error
@@ -382,6 +393,10 @@ def execute_kql_query(workspace_id: str, kql_query: str, timeout_seconds: int = 
                 with open(temp_query_file, 'w') as f:
                     f.write(new_query)
                 
+                # 记录重试信息
+                with open(log_file, 'a') as f:
+                    f.write(f"Retrying with reduced limit. New query:\n{new_query}\n")
+                
                 # Try again with the more restrictive query
                 retry_cmd = f"az monitor log-analytics query --workspace {workspace_id} --analytics-query \"@{temp_query_file}\" --timespan {timespan_param} -o json"
                 retry_process = subprocess.Popen(
@@ -393,9 +408,85 @@ def execute_kql_query(workspace_id: str, kql_query: str, timeout_seconds: int = 
                 )
                 stdout, stderr = retry_process.communicate(timeout=timeout_seconds * 3)
                 
+                # 记录重试结果
+                with open(log_file, 'a') as f:
+                    f.write(f"Retry ReturnCode: {retry_process.returncode}\n")
+                    f.write(f"Retry StdErr: {stderr}\n")
+                    if len(stdout) > 1000:
+                        f.write(f"Retry StdOut (truncated): {stdout[:1000]}...\n")
+                    else:
+                        f.write(f"Retry StdOut: {stdout}\n")
+                
                 if retry_process.returncode != 0:
+                    # 处理语义错误
+                    if "SemanticError" in stderr:
+                        print_error(f"语义错误：查询中的表格或字段可能不存在。详情请查看日志文件: {log_file}")
+                        # 尝试最简单的查询检查表格是否存在
+                        simplest_query = """
+// 检查表格存在性
+search "AzureNetworkAnalytics_CL" or "NetworkMonitoring"
+| limit 5
+"""
+                        with open(temp_query_file, 'w') as f:
+                            f.write(simplest_query)
+                            
+                        with open(log_file, 'a') as f:
+                            f.write(f"尝试最简单查询检查表格存在性:\n{simplest_query}\n")
+                            
+                        check_cmd = f"az monitor log-analytics query --workspace {workspace_id} --analytics-query \"@{temp_query_file}\" --timespan {timespan_param} -o json"
+                        check_process = subprocess.Popen(
+                            check_cmd,
+                            shell=True,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
+                            text=True
+                        )
+                        check_stdout, check_stderr = check_process.communicate(timeout=timeout_seconds * 3)
+                        
+                        with open(log_file, 'a') as f:
+                            f.write(f"Check ReturnCode: {check_process.returncode}\n")
+                            f.write(f"Check StdErr: {check_stderr}\n")
+                            f.write(f"Check StdOut: {check_stdout}\n")
+                    
                     print_error(f"Retry query failed: {stderr}")
                     return None
+            elif "SemanticError" in stderr:
+                print_error(f"语义错误：查询中的表格或字段可能不存在")
+                # 记录错误详情
+                with open(log_file, 'a') as f:
+                    f.write(f"SemanticError详情: {stderr}\n")
+                
+                # 尝试查找可用的表格
+                table_query = """
+// 检查可用表格
+search *
+| summarize count() by $table
+| order by count_ desc
+| limit 10
+"""
+                with open(temp_query_file, 'w') as f:
+                    f.write(table_query)
+                    
+                with open(log_file, 'a') as f:
+                    f.write(f"尝试查找可用表格:\n{table_query}\n")
+                    
+                table_cmd = f"az monitor log-analytics query --workspace {workspace_id} --analytics-query \"@{temp_query_file}\" --timespan {timespan_param} -o json"
+                table_process = subprocess.Popen(
+                    table_cmd,
+                    shell=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True
+                )
+                table_stdout, table_stderr = table_process.communicate(timeout=timeout_seconds * 3)
+                
+                with open(log_file, 'a') as f:
+                    f.write(f"Table search ReturnCode: {table_process.returncode}\n")
+                    f.write(f"Table search StdErr: {table_stderr}\n")
+                    if table_stdout.strip():
+                        f.write(f"Available tables: {table_stdout}\n")
+                
+                return None
             else:
                 print_error(f"Query execution failed: {stderr}")
                 return None
@@ -462,22 +553,30 @@ def generate_simple_kql_query(target_ip: str, time_range_hours: int = 24) -> str
     start_time_str = start_time.strftime("%Y-%m-%dT%H:%M:%S.%f")[:23] + "Z"
     end_time_str = end_time.strftime("%Y-%m-%dT%H:%M:%S.%f")[:23] + "Z"
     
-    # Basic KQL query for NSG flow logs without NSG filtering - exactly matching format in screenshot
-    query = f"""AzureNetworkAnalytics_CL
+    # 修改后的KQL查询 - 添加注释以便排查，确保与截图格式一致
+    query = f"""
+// KQL查询参数: IP={target_ip}, 时间范围={time_range_hours}小时
+// 使用union操作符确保兼容性
+union 
+(AzureNetworkAnalytics_CL
 | where TimeGenerated between (datetime({start_time_str}) .. datetime({end_time_str}))
-| where SrcIP_s == "{target_ip}" or DestIP_s == "{target_ip}"
-| where FlowStatus_s == "A"
-| project TimeGenerated,
-  FlowDirection_s,
-  SrcIP_s,
-  DestIP_s,
-  SrcPort_d,
-  DestPort_d,
-  Protocol_s,
-  FlowStatus_s,
-  L7Protocol_s,
-  InboundBytes_d,
-  OutboundBytes_d
+| where FlowStatus_s == "A" 
+| where SrcIP_s == "{target_ip}" or DestIP_s == "{target_ip}"),
+(NetworkMonitoring 
+| where TimeGenerated between (datetime({start_time_str}) .. datetime({end_time_str}))
+| where SrcIP == "{target_ip}" or DestIP == "{target_ip}")
+| project 
+  TimeGenerated,
+  FlowDirection_s = column_ifexists("FlowDirection_s", ""),
+  SrcIP_s = column_ifexists("SrcIP_s", column_ifexists("SrcIP", "")),
+  DestIP_s = column_ifexists("DestIP_s", column_ifexists("DestIP", "")),
+  SrcPort_d = column_ifexists("SrcPort_d", column_ifexists("SrcPort", 0)),
+  DestPort_d = column_ifexists("DestPort_d", column_ifexists("DestPort", 0)),
+  Protocol_s = column_ifexists("Protocol_s", column_ifexists("Protocol", "")),
+  FlowStatus_s = column_ifexists("FlowStatus_s", ""),
+  L7Protocol_s = column_ifexists("L7Protocol_s", ""),
+  InboundBytes_d = column_ifexists("InboundBytes_d", 0),
+  OutboundBytes_d = column_ifexists("OutboundBytes_d", 0)
 | sort by TimeGenerated desc
 | limit 100
 """
@@ -514,6 +613,7 @@ def generate_kql_query(target_ip: str,
     for workspace_id, nsg_ids in workspace_to_nsgs.items():
         # Create NSG filter condition if needed
         nsg_filter = ""
+        nsg_names_str = ""
         if filter_by_nsg and nsg_ids:
             nsg_names = []
             for nsg_id in nsg_ids:
@@ -522,24 +622,34 @@ def generate_kql_query(target_ip: str,
             
             # Only add NSG filter if we have NSGs to filter
             if nsg_names:
-                nsg_filter = f"| where NSGName_s in~ ({', '.join([f'\"{name}\"' for name in nsg_names])})\n"
+                nsg_names_str = ", ".join([f'"{name}"' for name in nsg_names])
+                # 修改NSG过滤语法，使用column_ifexists处理可能不存在的字段
+                nsg_filter = f"| where column_ifexists(\"NSGName_s\", \"\") in~ ({nsg_names_str})\n"
         
-        # Basic KQL query for NSG flow logs - exactly matching format in screenshot
-        query = f"""AzureNetworkAnalytics_CL
+        # 修改后的KQL查询 - 添加注释以便排查，确保与截图格式一致
+        query = f"""
+// KQL查询参数: IP={target_ip}, 时间范围={time_range_hours}小时, NSG过滤={nsg_names_str}
+// 使用union操作符确保兼容性
+union 
+(AzureNetworkAnalytics_CL
 | where TimeGenerated between (datetime({start_time_str}) .. datetime({end_time_str}))
-| where SrcIP_s == "{target_ip}" or DestIP_s == "{target_ip}"
-| where FlowStatus_s == "A"
-{nsg_filter}| project TimeGenerated,
-  FlowDirection_s,
-  SrcIP_s,
-  DestIP_s,
-  SrcPort_d,
-  DestPort_d,
-  Protocol_s,
-  FlowStatus_s,
-  L7Protocol_s,
-  InboundBytes_d,
-  OutboundBytes_d
+| where FlowStatus_s == "A" 
+| where SrcIP_s == "{target_ip}" or DestIP_s == "{target_ip}"),
+(NetworkMonitoring 
+| where TimeGenerated between (datetime({start_time_str}) .. datetime({end_time_str}))
+| where SrcIP == "{target_ip}" or DestIP == "{target_ip}")
+{nsg_filter}| project 
+  TimeGenerated,
+  FlowDirection_s = column_ifexists("FlowDirection_s", ""),
+  SrcIP_s = column_ifexists("SrcIP_s", column_ifexists("SrcIP", "")),
+  DestIP_s = column_ifexists("DestIP_s", column_ifexists("DestIP", "")),
+  SrcPort_d = column_ifexists("SrcPort_d", column_ifexists("SrcPort", 0)),
+  DestPort_d = column_ifexists("DestPort_d", column_ifexists("DestPort", 0)),
+  Protocol_s = column_ifexists("Protocol_s", column_ifexists("Protocol", "")),
+  FlowStatus_s = column_ifexists("FlowStatus_s", ""),
+  L7Protocol_s = column_ifexists("L7Protocol_s", ""),
+  InboundBytes_d = column_ifexists("InboundBytes_d", 0),
+  OutboundBytes_d = column_ifexists("OutboundBytes_d", 0)
 | sort by TimeGenerated desc
 | limit 100
 """
