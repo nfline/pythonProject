@@ -324,30 +324,80 @@ class AzureIPTrafficAnalyzer:
                     if subnet_ids:
                         print_info("Querying subnet network security groups...")
                         
-                        # Format subnet IDs for query
-                        subnet_id_list = ",".join([f"'{s}'" for s in subnet_ids])
-                        
-                        subnet_query = f"""
+                        # 直接查询VNET信息，以获取子网的完整信息
+                        vnets_query = f"""
                         Resources
                         | where type =~ 'microsoft.network/virtualnetworks'
                         | mv-expand subnet=properties.subnets
-                        | where subnet.id in~ ({subnet_id_list})
-                        | project subnetId = subnet.id,
-                                  subnetName = subnet.name,
-                                  nsgId = tostring(subnet.properties.networkSecurityGroup.id)
+                        | project vnetName=name, 
+                                 vnetId=id,
+                                 subnetName=subnet.name, 
+                                 subnetId=subnet.id,
+                                 subnetNsgId=tostring(subnet.properties.networkSecurityGroup.id),
+                                 subnetProperties=subnet.properties
                         """
                         
                         try:
-                            subnet_request = QueryRequest(query=subnet_query, subscriptions=[self.subscription_id])
-                            subnet_response = graph_client.resources(subnet_request)
+                            vnets_request = QueryRequest(query=vnets_query, subscriptions=[self.subscription_id])
+                            vnets_response = graph_client.resources(vnets_request)
                             
-                            if subnet_response.data:
-                                for subnet in subnet_response.data:
-                                    subnet_nsg = subnet.get('nsgId')
-                                    if subnet_nsg and subnet_nsg not in nsg_ids:
-                                        nsg_ids.append(subnet_nsg)
-                        except Exception as subnet_error:
-                            print_warning(f"Error querying subnet NSGs: {str(subnet_error)}")
+                            if vnets_response.data:
+                                print_success(f"Found {len(vnets_response.data)} subnets in virtual networks")
+                                save_json(vnets_response.data, os.path.join(self.output_dir, "all_vnet_subnets.json"))
+                                
+                                # 根据子网名称匹配NSGs
+                                for vnet_subnet in vnets_response.data:
+                                    for subnet_id in subnet_ids:
+                                        # 从子网ID中提取子网名称
+                                        subnet_name = subnet_id.split('/')[-1] if subnet_id else None
+                                        
+                                        if subnet_name and vnet_subnet.get('subnetName') == subnet_name:
+                                            nsg_id = vnet_subnet.get('subnetNsgId')
+                                            if nsg_id and nsg_id not in nsg_ids:
+                                                nsg_ids.append(nsg_id)
+                                                print_success(f"Found NSG for subnet {subnet_name}: {nsg_id}")
+                            else:
+                                print_warning("No virtual network details found")
+                        except Exception as vnets_error:
+                            print_error(f"Error querying virtual networks: {str(vnets_error)}")
+                        
+                        # 如果上面的方法没有找到NSG，尝试直接查询子网
+                        if not nsg_ids:
+                            # 尝试直接通过子网ID查询
+                            for subnet_id in subnet_ids:
+                                print_info(f"Trying to get NSG for subnet: {subnet_id}")
+                                
+                                # 从subnet_id提取资源组和子网名
+                                parts = subnet_id.split('/')
+                                if len(parts) < 9:
+                                    continue
+                                    
+                                resource_group = None
+                                vnet_name = None
+                                subnet_name = None
+                                
+                                for i, part in enumerate(parts):
+                                    if part.lower() == 'resourcegroups' and i+1 < len(parts):
+                                        resource_group = parts[i+1]
+                                    elif part.lower() == 'virtualnetworks' and i+1 < len(parts):
+                                        vnet_name = parts[i+1]
+                                    elif part.lower() == 'subnets' and i+1 < len(parts):
+                                        subnet_name = parts[i+1]
+                                        
+                                if resource_group and vnet_name and subnet_name:
+                                    try:
+                                        # 使用Azure CLI直接查询子网信息
+                                        cmd = f"az network vnet subnet show --resource-group {resource_group} --vnet-name {vnet_name} --name {subnet_name} --query networkSecurityGroup.id -o tsv"
+                                        import subprocess
+                                        
+                                        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, check=False)
+                                        if result.returncode == 0 and result.stdout.strip():
+                                            nsg_id = result.stdout.strip()
+                                            if nsg_id and nsg_id not in nsg_ids:
+                                                nsg_ids.append(nsg_id)
+                                                print_success(f"Found NSG for subnet {subnet_name} using Azure CLI: {nsg_id}")
+                                    except Exception as cli_error:
+                                        print_warning(f"Error using Azure CLI to get subnet NSG: {str(cli_error)}")
                     
                     # Save all related NSG IDs
                     self.subnet_nsg_ids = nsg_ids
@@ -479,8 +529,6 @@ class AzureIPTrafficAnalyzer:
                         print_warning("No NSGs found for matching subnets")
                 else:
                     print_warning(f"No subnets found that contain IP {self.target_ip}")
-            else:
-                print_warning("No virtual networks found in the subscription")
             
             return False
         except Exception as e:
