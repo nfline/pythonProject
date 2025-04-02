@@ -335,7 +335,7 @@ def execute_kql_query(workspace_id: str, kql_query: str, timeout_seconds: int = 
     with open(temp_query_file, 'w', encoding='utf-8') as f:
         f.write(kql_query)
     
-    # 记录查询详情到日志文件，方便排查
+    # Log query details to log file for troubleshooting
     log_file = os.path.join("output", "kql_commands.log")
     with open(log_file, 'a') as f:
         f.write(f"\n\n--- QUERY EXECUTION: {datetime.now(timezone.utc)} ---\n")
@@ -348,7 +348,7 @@ def execute_kql_query(workspace_id: str, kql_query: str, timeout_seconds: int = 
     cmd = f"az monitor log-analytics query --workspace {workspace_id} --analytics-query \"@{temp_query_file}\" --timespan {timespan_param} -o json"
     
     print_info(f"Query command: {cmd}")
-    # 记录完整命令到日志
+    # Log complete command to log file
     with open(log_file, 'a') as f:
         f.write(f"Command: {cmd}\n")
     
@@ -420,11 +420,11 @@ def execute_kql_query(workspace_id: str, kql_query: str, timeout_seconds: int = 
                 if retry_process.returncode != 0:
                     # 处理语义错误
                     if "SemanticError" in stderr:
-                        print_error(f"语义错误：查询中的表格或字段可能不存在。详情请查看日志文件: {log_file}")
-                        # 尝试最简单的查询检查表格是否存在
+                        print_error(f"Semantic error: Table or field may not exist. See log file for details: {log_file}")
+                        # Try simple query to check table existence
                         simplest_query = """
-// 检查表格存在性
-search "AzureNetworkAnalytics_CL" or "NetworkMonitoring"
+    // Check table existence
+    search "AzureNetworkAnalytics_CL" or "NetworkMonitoring"
 | limit 5
 """
                         with open(temp_query_file, 'w', encoding='utf-8') as f:
@@ -451,14 +451,14 @@ search "AzureNetworkAnalytics_CL" or "NetworkMonitoring"
                     print_error(f"Retry query failed: {stderr}")
                     return None
             elif "SemanticError" in stderr:
-                print_error(f"语义错误：查询中的表格或字段可能不存在")
-                # 记录错误详情
+                print_error(f"Semantic error: Table or field may not exist")
+                # Log error details
                 with open(log_file, 'a') as f:
-                    f.write(f"SemanticError详情: {stderr}\n")
+                    f.write(f"SemanticError details: {stderr}\n")
                 
-                # 尝试查找可用的表格
+                # Try to find available tables
                 table_query = """
-// 检查可用表格
+// Check available tables
 search *
 | summarize count() by $table
 | order by count_ desc
@@ -535,7 +535,7 @@ search *
         print_error(f"Error executing query: {str(e)}")
         return None
     finally:
-        # Clean up temp file
+        # Clean up temporary file
         if os.path.exists(temp_query_file):
             try:
                 os.remove(temp_query_file)
