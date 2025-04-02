@@ -365,7 +365,7 @@ def execute_kql_query(workspace_id: str, kql_query: str, timeout_seconds: int = 
         # Wait with timeout (3x the query timeout to allow for processing)
         stdout, stderr = process.communicate(timeout=timeout_seconds * 3)
         
-        # 记录输出结果到日志
+        # Log output results to log file
         with open(log_file, 'a') as f:
             f.write(f"ReturnCode: {process.returncode}\n")
             f.write(f"StdErr: {stderr}\n")
@@ -393,7 +393,7 @@ def execute_kql_query(workspace_id: str, kql_query: str, timeout_seconds: int = 
                 with open(temp_query_file, 'w', encoding='utf-8') as f:
                     f.write(new_query)
                 
-                # 记录重试信息
+                # Log retry information
                 with open(log_file, 'a') as f:
                     f.write(f"Retrying with reduced limit. New query:\n{new_query}\n")
                 
@@ -408,7 +408,7 @@ def execute_kql_query(workspace_id: str, kql_query: str, timeout_seconds: int = 
                 )
                 stdout, stderr = retry_process.communicate(timeout=timeout_seconds * 3)
                 
-                # 记录重试结果
+                # Log retry results
                 with open(log_file, 'a') as f:
                     f.write(f"Retry ReturnCode: {retry_process.returncode}\n")
                     f.write(f"Retry StdErr: {stderr}\n")
@@ -418,7 +418,7 @@ def execute_kql_query(workspace_id: str, kql_query: str, timeout_seconds: int = 
                         f.write(f"Retry StdOut: {stdout}\n")
                 
                 if retry_process.returncode != 0:
-                    # 处理语义错误
+                    # Handle semantic error
                     if "SemanticError" in stderr:
                         print_error(f"Semantic error: Table or field may not exist. See log file for details: {log_file}")
                         # Try simple query to check table existence
@@ -431,7 +431,7 @@ def execute_kql_query(workspace_id: str, kql_query: str, timeout_seconds: int = 
                             f.write(simplest_query)
                             
                         with open(log_file, 'a') as f:
-                            f.write(f"尝试最简单查询检查表格存在性:\n{simplest_query}\n")
+                            f.write(f"Attempting simplest query to check table existence:\n{simplest_query}\n")
                             
                         check_cmd = f"az monitor log-analytics query --workspace {workspace_id} --analytics-query \"@{temp_query_file}\" --timespan {timespan_param} -o json"
                         check_process = subprocess.Popen(
@@ -468,7 +468,7 @@ search *
                     f.write(table_query)
                     
                 with open(log_file, 'a') as f:
-                    f.write(f"尝试查找可用表格:\n{table_query}\n")
+                    f.write(f"Attempting to find available tables:\n{table_query}\n")
                     
                 table_cmd = f"az monitor log-analytics query --workspace {workspace_id} --analytics-query \"@{temp_query_file}\" --timespan {timespan_param} -o json"
                 table_process = subprocess.Popen(
