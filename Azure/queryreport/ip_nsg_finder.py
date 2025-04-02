@@ -332,7 +332,7 @@ def execute_kql_query(workspace_id: str, kql_query: str, timeout_seconds: int = 
     # Create a temporary file with the query to avoid command line length issues
     temp_query_file = os.path.join("output", "temp_query.kql")
     os.makedirs("output", exist_ok=True)
-    with open(temp_query_file, 'w') as f:
+    with open(temp_query_file, 'w', encoding='utf-8') as f:
         f.write(kql_query)
     
     # 记录查询详情到日志文件，方便排查
@@ -390,7 +390,7 @@ def execute_kql_query(workspace_id: str, kql_query: str, timeout_seconds: int = 
                     new_query = kql_query + "\n| limit 20"
                 
                 print_info(f"Retrying with more restrictive query (limit reduced)")
-                with open(temp_query_file, 'w') as f:
+                with open(temp_query_file, 'w', encoding='utf-8') as f:
                     f.write(new_query)
                 
                 # 记录重试信息
@@ -427,7 +427,7 @@ def execute_kql_query(workspace_id: str, kql_query: str, timeout_seconds: int = 
 search "AzureNetworkAnalytics_CL" or "NetworkMonitoring"
 | limit 5
 """
-                        with open(temp_query_file, 'w') as f:
+                        with open(temp_query_file, 'w', encoding='utf-8') as f:
                             f.write(simplest_query)
                             
                         with open(log_file, 'a') as f:
@@ -464,7 +464,7 @@ search *
 | order by count_ desc
 | limit 10
 """
-                with open(temp_query_file, 'w') as f:
+                with open(temp_query_file, 'w', encoding='utf-8') as f:
                     f.write(table_query)
                     
                 with open(log_file, 'a') as f:
@@ -661,7 +661,7 @@ union
         query_filename = f"kql_query_{workspace_short_id}.kql"
         query_path = os.path.join(output_dir, query_filename)
         
-        with open(query_path, 'w') as f:
+        with open(query_path, 'w', encoding='utf-8') as f:
             f.write(query)
         
         print_success(f"Generated KQL query and saved to {query_path}")
@@ -706,7 +706,7 @@ def analyze_traffic(target_ip: str, time_range_hours: int = 24, filter_by_nsg: b
             if workspace_id:
                 query = generate_simple_kql_query(target_ip, time_range_hours)
                 result_path = os.path.join(output_dir, f"simple_kql_query.kql")
-                with open(result_path, 'w') as f:
+                with open(result_path, 'w', encoding='utf-8') as f:
                     f.write(query)
                 print_success(f"Generated simple KQL query and saved to {result_path}")
                 
@@ -732,7 +732,7 @@ def analyze_traffic(target_ip: str, time_range_hours: int = 24, filter_by_nsg: b
             if workspace_id:
                 query = generate_simple_kql_query(target_ip, time_range_hours)
                 result_path = os.path.join(output_dir, f"simple_kql_query.kql")
-                with open(result_path, 'w') as f:
+                with open(result_path, 'w', encoding='utf-8') as f:
                     f.write(query)
                 print_success(f"Generated simple KQL query and saved to {result_path}")
                 
@@ -762,7 +762,7 @@ def analyze_traffic(target_ip: str, time_range_hours: int = 24, filter_by_nsg: b
                 # Create a simple query based on IP only
                 query = generate_simple_kql_query(target_ip, time_range_hours)
                 result_path = os.path.join(output_dir, f"simple_kql_query.kql")
-                with open(result_path, 'w') as f:
+                with open(result_path, 'w', encoding='utf-8') as f:
                     f.write(query)
                 print_success(f"Generated simple KQL query and saved to {result_path}")
                 
@@ -853,7 +853,7 @@ def main():
         # Generate a simple query
         query = generate_simple_kql_query(args.ip_address, args.time_range)
         result_path = os.path.join(output_dir, f"direct_kql_query.kql")
-        with open(result_path, 'w') as f:
+        with open(result_path, 'w', encoding='utf-8') as f:
             f.write(query)
         print_success(f"Generated direct KQL query and saved to {result_path}")
         
@@ -875,7 +875,7 @@ def main():
         
         query = generate_simple_kql_query(args.ip_address, args.time_range)
         result_path = os.path.join(output_dir, f"workspace_query.kql")
-        with open(result_path, 'w') as f:
+        with open(result_path, 'w', encoding='utf-8') as f:
             f.write(query)
         print_success(f"Generated KQL query for specified workspace and saved to {result_path}")
         
@@ -900,7 +900,7 @@ def main():
                     
                     query = generate_simple_kql_query(args.ip_address, args.time_range)
                     result_path = os.path.join(output_dir, f"direct_kql_query.kql")
-                    with open(result_path, 'w') as f:
+                    with open(result_path, 'w', encoding='utf-8') as f:
                         f.write(query)
                     print_success(f"Generated KQL query and saved to {result_path}")
                     
