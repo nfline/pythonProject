@@ -1,4 +1,4 @@
-````mermaid
+```mermaid
 flowchart TD
     start([开始]) --> param[收集参数\nIP地址 & 天数]
     param --> init[初始化环境\n创建输出目录]
@@ -28,4 +28,4 @@ flowchart TD
     
     classDef highlight fill:#f96,stroke:#333,stroke-width:2px;
     class ResourceDiscovery,findResources,directNICs,findSubnets,getSubnetNSGs,getNSGs,findNSGRules highlight;
-````
+```
