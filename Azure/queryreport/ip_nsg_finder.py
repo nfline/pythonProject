@@ -309,39 +309,85 @@ def execute_kql_query(workspace_id: str, kql_query: str, timeout_seconds: int = 
     """Execute a KQL query against a Log Analytics workspace"""
     print_info(f"\nExecuting KQL query against workspace: {workspace_id}")
     
-    # Construct Azure CLI command to run the query
-    # Add timeout to prevent hanging indefinitely
-    cmd = f"az monitor log-analytics query --workspace {workspace_id} --analytics-query \"{kql_query}\" --timespan {timeout_seconds}m -o json"
+    # Format the query to ensure it's properly escaped
+    # Remove any leading/trailing whitespace and newlines
+    kql_query = kql_query.strip()
     
-    # Execute the query
-    results = run_command(cmd)
+    # Make sure workspace ID is properly formatted
+    if '/' in workspace_id:  # If it's a full resource ID
+        # Extract just the workspace ID part at the end
+        workspace_id = workspace_id.split('/')[-1]
     
-    if results:
-        # Save results
-        output_dir = "output"
-        os.makedirs(output_dir, exist_ok=True)
+    # Handle timespan parameter - use PT format for Azure CLI
+    # PT60M = 60 minutes format required by Azure
+    timespan_param = f"PT{timeout_seconds}M"
+    
+    # Construct Azure CLI command with proper parameters
+    # Use --query parameter to process results properly
+    cmd = f"az monitor log-analytics query --workspace {workspace_id} --analytics-query \"{kql_query}\" --timespan {timespan_param} -o json"
+    
+    print_info(f"Query command: {cmd}")
+    
+    # Execute the query with extended timeout
+    try:
+        process = subprocess.Popen(
+            cmd, 
+            shell=True, 
+            stdout=subprocess.PIPE, 
+            stderr=subprocess.PIPE,
+            text=True
+        )
         
-        workspace_short_id = workspace_id.split('/')[-1]
-        result_path = os.path.join(output_dir, f"query_results_{workspace_short_id}.json")
+        # Wait with timeout (3x the query timeout to allow for processing)
+        stdout, stderr = process.communicate(timeout=timeout_seconds * 3)
         
-        save_json(results, result_path)
-        print_success(f"Query results saved to {result_path}")
+        if process.returncode != 0:
+            print_error(f"Query execution failed: {stderr}")
+            return None
         
-        # Print summary
-        if isinstance(results, list):
-            print_success(f"Query returned {len(results)} records")
-            if len(results) > 0:
+        if not stdout.strip():
+            print_warning("Query executed successfully but returned no data")
+            return []
+        
+        try:
+            results = json.loads(stdout)
+            if not results:
+                print_warning("Query returned empty results")
+                return []
+            
+            # Save results
+            output_dir = "output"
+            os.makedirs(output_dir, exist_ok=True)
+            
+            workspace_short_id = workspace_id.split('/')[-1] if '/' in workspace_id else workspace_id
+            result_path = os.path.join(output_dir, f"query_results_{workspace_short_id}.json")
+            
+            save_json(results, result_path)
+            print_success(f"Query results saved to {result_path}")
+            
+            # Print summary
+            result_count = len(results) if isinstance(results, list) else 0
+            print_success(f"Query returned {result_count} records")
+            
+            if result_count > 0:
                 print_info("Sample records:")
-                for i, record in enumerate(results[:3]):  # Show up to 3 records
-                    print(json.dumps(record, indent=2))
-                    if i < len(results[:3]) - 1:
+                sample_size = min(3, result_count)
+                for i in range(sample_size):
+                    print(json.dumps(results[i], indent=2))
+                    if i < sample_size - 1:
                         print("---")
-        else:
-            print_success("Query executed but returned data structure is not the expected list format")
-    else:
-        print_warning("Failed to execute KQL query or no results returned")
-    
-    return results
+            
+            return results
+        except json.JSONDecodeError as e:
+            print_error(f"Failed to parse query results: {e}")
+            print_info(f"Raw output: {stdout[:500]}...")
+            return None
+    except subprocess.TimeoutExpired:
+        print_error(f"Query execution timed out after {timeout_seconds*3} seconds")
+        return None
+    except Exception as e:
+        print_error(f"Error executing query: {str(e)}")
+        return None
 
 def generate_simple_kql_query(target_ip: str, time_range_hours: int = 24) -> str:
     """Generate a simple KQL query without NSG filtering"""
@@ -350,30 +396,32 @@ def generate_simple_kql_query(target_ip: str, time_range_hours: int = 24) -> str
     end_time = datetime.utcnow()
     start_time = end_time - timedelta(hours=time_range_hours)
     
-    # Format times for KQL query
-    start_time_str = start_time.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-    end_time_str = end_time.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    # Format times for KQL query - use the exact format observed in Azure portal
+    start_time_str = start_time.strftime("%Y-%m-%dT%H:%M:%S.%f")[:23] + "Z"
+    end_time_str = end_time.strftime("%Y-%m-%dT%H:%M:%S.%f")[:23] + "Z"
     
     # Basic KQL query for NSG flow logs without NSG filtering
+    # Following the exact format that works in Azure portal
     query = f"""
 AzureNetworkAnalytics_CL
 | where TimeGenerated between (datetime({start_time_str}) .. datetime({end_time_str}))
 | where FlowType_s == "Flow"
 | where SrcIP_s == "{target_ip}" or DestIP_s == "{target_ip}"
 | project TimeGenerated, 
-          NSGName_s, 
-          FlowDirection_s, 
-          SrcIP_s, 
-          DestIP_s, 
-          SrcPort_d, 
-          DestPort_d, 
-          Protocol_s, 
-          FlowStatus_s,
-          L7Protocol_s,
-          AllowedInFlows_d,
-          AllowedOutFlows_d,
-          DeniedInFlows_d,
-          DeniedOutFlows_d
+  FlowDirection_s,
+  SrcIP_s,
+  DestIP_s,
+  SrcPort_d,
+  DestPort_d,
+  Protocol_s,
+  FlowStatus_s,
+  L7Protocol_s,
+  NSGName_s,
+  NSGRuleId_s,
+  AllowedInFlows_d,
+  AllowedOutFlows_d,
+  DeniedInFlows_d,
+  DeniedOutFlows_d
 | sort by TimeGenerated desc
 | limit 1000
 """
@@ -395,9 +443,9 @@ def generate_kql_query(target_ip: str,
     end_time = datetime.utcnow()
     start_time = end_time - timedelta(hours=time_range_hours)
     
-    # Format times for KQL query
-    start_time_str = start_time.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-    end_time_str = end_time.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    # Format times for KQL query - use the exact format observed in Azure portal
+    start_time_str = start_time.strftime("%Y-%m-%dT%H:%M:%S.%f")[:23] + "Z"
+    end_time_str = end_time.strftime("%Y-%m-%dT%H:%M:%S.%f")[:23] + "Z"
     
     # Create a mapping of workspace ID to NSG IDs
     workspace_to_nsgs = {}
@@ -410,7 +458,7 @@ def generate_kql_query(target_ip: str,
     for workspace_id, nsg_ids in workspace_to_nsgs.items():
         # Create NSG filter condition if needed
         nsg_filter = ""
-        if filter_by_nsg:
+        if filter_by_nsg and nsg_ids:
             nsg_names = []
             for nsg_id in nsg_ids:
                 nsg_name = nsg_id.split('/')[-1]
@@ -427,25 +475,26 @@ AzureNetworkAnalytics_CL
 | where FlowType_s == "Flow" 
 {nsg_filter}| where SrcIP_s == "{target_ip}" or DestIP_s == "{target_ip}"
 | project TimeGenerated, 
-          NSGName_s, 
-          FlowDirection_s, 
-          SrcIP_s, 
-          DestIP_s, 
-          SrcPort_d, 
-          DestPort_d, 
-          Protocol_s, 
-          FlowStatus_s,
-          L7Protocol_s,
-          AllowedInFlows_d,
-          AllowedOutFlows_d,
-          DeniedInFlows_d,
-          DeniedOutFlows_d
+  FlowDirection_s,
+  SrcIP_s,
+  DestIP_s,
+  SrcPort_d,
+  DestPort_d,
+  Protocol_s,
+  FlowStatus_s,
+  L7Protocol_s,
+  NSGName_s,
+  NSGRuleId_s,
+  AllowedInFlows_d,
+  AllowedOutFlows_d,
+  DeniedInFlows_d,
+  DeniedOutFlows_d
 | sort by TimeGenerated desc
 | limit 1000
 """
         
         # Create a short name for the workspace for filename
-        workspace_short_id = workspace_id.split('/')[-1]
+        workspace_short_id = workspace_id.split('/')[-1] if '/' in workspace_id else workspace_id
         
         # Save the query to a file
         query_filename = f"kql_query_{workspace_short_id}.kql"
