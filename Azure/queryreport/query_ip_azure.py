@@ -256,409 +256,338 @@ class AzureIPTrafficAnalyzer:
 
     def find_resources_by_ip(self) -> None:
         """Find Azure resources associated with the target IP address and determine related NSG flow logs."""
-        print_info(f"\n[2/5] Finding resources associated with IP {self.target_ip}...")
+        print_info(f"\n[2/5] 查找与IP {self.target_ip}相关的资源...")
         
         try:
-            # Check if credential is properly set up
+            # 检查凭据是否正确设置
             if self.credential is None:
-                print_error("Azure credential is not initialized. Please run login_to_azure() first.")
+                print_error("Azure凭据未初始化，请先运行login_to_azure()")
                 return
-                
-            # Use Azure Resource Graph to query for NICs with this IP
-            try:
-                from azure.mgmt.resourcegraph import ResourceGraphClient
-                from azure.mgmt.resourcegraph.models import QueryRequest
-                
-                print_info("Creating Resource Graph client...")
-                graph_client = ResourceGraphClient(self.credential)
-                
-                # 1. DIRECTLY QUERY NETWORK INTERFACES WITH THIS IP
-                print_info(f"Querying for network interfaces with IP {self.target_ip}...")
-                query = f"""
-                Resources
-                | where type =~ 'microsoft.network/networkinterfaces'
-                | where properties.ipConfigurations[0].properties.privateIPAddress =~ '{self.target_ip}'
-                | project id, name, resourceGroup, subscriptionId, location, 
-                         vnetId = tostring(properties.ipConfigurations[0].properties.subnet.id),
-                         subnetName = tostring(split(properties.ipConfigurations[0].properties.subnet.id, '/')[-1]),
-                         nsgId = tostring(properties.networkSecurityGroup.id)
-                """
-                
-                request = QueryRequest(query=query, subscriptions=[self.subscription_id])
-                response = graph_client.resources(request)
-                
-                if response.data:
-                    self.associated_resources = response.data
-                    save_json(self.associated_resources, os.path.join(self.output_dir, "associated_resources.json"))
-                    print_success(f"Found {len(self.associated_resources)} resources with IP {self.target_ip}")
-                    
-                    # 2. EXTRACT VNET AND SUBNET INFO
-                    vnet_ids = []
-                    subnet_ids = []
-                    nsg_ids = []
-                    
-                    for nic in self.associated_resources:
-                        vnet_id = nic.get('vnetId')
-                        if vnet_id:
-                            # Extract VNET ID from subnet ID (format: /subscriptions/{sub}/resourceGroups/{rg}/providers/Microsoft.Network/virtualNetworks/{vnet}/subnets/{subnet})
-                            vnet_parts = vnet_id.split('/')
-                            if len(vnet_parts) >= 9:
-                                # Reconstruct VNET ID
-                                v_id = '/'.join(vnet_parts[:-2])
-                                if v_id and v_id not in vnet_ids:
-                                    vnet_ids.append(v_id)
-                                
-                                # Save subnet ID
-                                if vnet_id not in subnet_ids:
-                                    subnet_ids.append(vnet_id)
-                        
-                        # Collect NSGs directly associated with NICs
-                        nsg_id = nic.get('nsgId')
-                        if nsg_id and nsg_id not in nsg_ids:
-                            nsg_ids.append(nsg_id)
-                    
-                    print_success(f"Found {len(vnet_ids)} related virtual networks")
-                    print_success(f"Found {len(subnet_ids)} related subnets")
-                    
-                    # 3. QUERY SUBNETS FOR NSG INFORMATION
-                    if subnet_ids:
-                        print_info("Querying subnet network security groups...")
-                        
-                        # 直接查询VNET信息，以获取子网的完整信息
-                        vnets_query = f"""
-                        Resources
-                        | where type =~ 'microsoft.network/virtualnetworks'
-                        | mv-expand subnet=properties.subnets
-                        | project vnetName=name, 
-                                 vnetId=id,
-                                 subnetName=subnet.name, 
-                                 subnetId=subnet.id,
-                                 subnetNsgId=tostring(subnet.properties.networkSecurityGroup.id),
-                                 subnetProperties=subnet.properties
-                        """
-                        
-                        try:
-                            vnets_request = QueryRequest(query=vnets_query, subscriptions=[self.subscription_id])
-                            vnets_response = graph_client.resources(vnets_request)
-                            
-                            if vnets_response.data:
-                                print_success(f"Found {len(vnets_response.data)} subnets in virtual networks")
-                                save_json(vnets_response.data, os.path.join(self.output_dir, "all_vnet_subnets.json"))
-                                
-                                # 根据子网名称匹配NSGs
-                                for vnet_subnet in vnets_response.data:
-                                    for subnet_id in subnet_ids:
-                                        # 从子网ID中提取子网名称
-                                        subnet_name = subnet_id.split('/')[-1] if subnet_id else None
-                                        
-                                        if subnet_name and vnet_subnet.get('subnetName') == subnet_name:
-                                            nsg_id = vnet_subnet.get('subnetNsgId')
-                                            if nsg_id and nsg_id not in nsg_ids:
-                                                nsg_ids.append(nsg_id)
-                                                print_success(f"Found NSG for subnet {subnet_name}: {nsg_id}")
-                            else:
-                                print_warning("No virtual network details found")
-                        except Exception as vnets_error:
-                            print_error(f"Error querying virtual networks: {str(vnets_error)}")
-                        
-                        # 如果上面的方法没有找到NSG，尝试直接查询子网
-                        if not nsg_ids:
-                            # 尝试直接通过子网ID查询
-                            for subnet_id in subnet_ids:
-                                print_info(f"Trying to get NSG for subnet: {subnet_id}")
-                                
-                                # 从subnet_id提取资源组和子网名
-                                parts = subnet_id.split('/')
-                                if len(parts) < 9:
-                                    continue
-                                    
-                                resource_group = None
-                                vnet_name = None
-                                subnet_name = None
-                                
-                                for i, part in enumerate(parts):
-                                    if part.lower() == 'resourcegroups' and i+1 < len(parts):
-                                        resource_group = parts[i+1]
-                                    elif part.lower() == 'virtualnetworks' and i+1 < len(parts):
-                                        vnet_name = parts[i+1]
-                                    elif part.lower() == 'subnets' and i+1 < len(parts):
-                                        subnet_name = parts[i+1]
-                                        
-                                if resource_group and vnet_name and subnet_name:
-                                    try:
-                                        # 使用Azure CLI直接查询子网信息
-                                        cmd = f"az network vnet subnet show --resource-group {resource_group} --vnet-name {vnet_name} --name {subnet_name} --query networkSecurityGroup.id -o tsv"
-                                        import subprocess
-                                        
-                                        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, check=False)
-                                        if result.returncode == 0 and result.stdout.strip():
-                                            nsg_id = result.stdout.strip()
-                                            if nsg_id and nsg_id not in nsg_ids:
-                                                nsg_ids.append(nsg_id)
-                                                print_success(f"Found NSG for subnet {subnet_name} using Azure CLI: {nsg_id}")
-                                    except Exception as cli_error:
-                                        print_warning(f"Error using Azure CLI to get subnet NSG: {str(cli_error)}")
-                    
-                    # Save all related NSG IDs
-                    self.subnet_nsg_ids = nsg_ids
-                    save_json(nsg_ids, os.path.join(self.output_dir, "related_nsg_ids.json"))
-                    print_success(f"Found {len(nsg_ids)} associated network security groups")
-                    
-                    # 4. Directly proceed to find flow logs for the collected NSGs
-                    if nsg_ids:
-                        self.find_flow_logs()
-                    else:
-                        print_warning("No associated NSGs found, cannot query flow logs")
-                else:
-                    # If no network interfaces found, try to find subnets containing this IP
-                    print_warning(f"No resources with IP {self.target_ip} found, trying to find subnets containing this IP...")
-                    self._find_subnets_containing_ip(graph_client)
-            except ImportError:
-                print_error("Unable to import azure.mgmt.resourcegraph. Please install it using: pip install azure-mgmt-resourcegraph")
-                return
-            except Exception as query_error:
-                print_error(f"Error querying resources: {str(query_error)}")
-                # Try alternative method using Azure CLI
-                self._fallback_to_azure_cli()
+            
+            # 找到与IP相关的所有NSG
+            nsg_ids = self.get_nsgs_for_ip()
+            
+            # 如果找到NSG，直接进行流日志查询
+            if nsg_ids:
+                self.subnet_nsg_ids = nsg_ids
+                self.find_flow_logs()
+            else:
+                print_warning(f"未找到与IP {self.target_ip}相关的NSG，无法查询流日志")
+        
         except Exception as e:
-            print_error(f"Error finding resources: {str(e)}")
+            print_error(f"查找资源时出错: {str(e)}")
             import traceback
             traceback.print_exc()
     
-    def _find_subnets_containing_ip(self, graph_client=None):
-        """Helper method to find subnets containing the target IP."""
-        print_info(f"Searching for subnets that contain IP {self.target_ip}...")
+    def get_nsgs_for_ip(self) -> List[str]:
+        """
+        直接从IP地址获取相关的NSG IDs，使用多种方法。
         
-        # Parse the IP address to determine subnet range
-        ip_parts = self.target_ip.split('.')
-        if len(ip_parts) != 4:
-            print_error(f"Invalid IP address format: {self.target_ip}")
-            return False
-            
-        # Convert IP string to integer for subnet calculations
+        Returns:
+            List[str]: NSG IDs列表
+        """
+        print_info(f"\n[2a/5] 专门查询与IP {self.target_ip}相关的NSG...")
+        nsg_ids = []
+        
+        # 1. 首先尝试查询直接使用此IP的网络接口相关的NSG
         try:
-            ip_int = (int(ip_parts[0]) << 24) + (int(ip_parts[1]) << 16) + (int(ip_parts[2]) << 8) + int(ip_parts[3])
-        except ValueError:
-            print_error(f"Invalid IP address components: {self.target_ip}")
-            return False
-        
-        # Create Resource Graph client if not provided
-        if graph_client is None:
+            print_info("方法1: 查询拥有此IP的网络接口相关的NSG...")
+            
+            # 方法1.1: 使用Resource Graph
             try:
                 from azure.mgmt.resourcegraph import ResourceGraphClient
                 from azure.mgmt.resourcegraph.models import QueryRequest
+                
                 graph_client = ResourceGraphClient(self.credential)
-            except (ImportError, Exception) as e:
-                print_error(f"Error creating Resource Graph client: {str(e)}")
-                return False
-        
-        # Query virtual networks and their subnets
-        try:
-            query = """
-            Resources
-            | where type =~ 'microsoft.network/virtualnetworks'
-            | mv-expand subnet=properties.subnets
-            | project vnetName=name, vnetId=id, subnetName=subnet.name, 
-                     subnetPrefix=subnet.properties.addressPrefix,
-                     subnetId=subnet.id, 
-                     nsgId=subnet.properties.networkSecurityGroup.id,
-                     resourceGroup, subscriptionId, location
-            """
-            
-            request = QueryRequest(query=query, subscriptions=[self.subscription_id])
-            response = graph_client.resources(request)
-            
-            # Function to check if IP is in subnet
-            def ip_in_subnet(ip_addr, subnet_prefix):
-                try:
-                    subnet_addr, subnet_mask = subnet_prefix.split('/')
-                    subnet_mask = int(subnet_mask)
-                    
-                    subnet_parts = subnet_addr.split('.')
-                    if len(subnet_parts) != 4:
-                        return False
-                        
-                    subnet_int = (int(subnet_parts[0]) << 24) + (int(subnet_parts[1]) << 16) + \
-                                 (int(subnet_parts[2]) << 8) + int(subnet_parts[3])
-                                 
-                    mask_int = (0xFFFFFFFF << (32 - subnet_mask)) & 0xFFFFFFFF
-                    
-                    return (ip_int & mask_int) == (subnet_int & mask_int)
-                except:
-                    return False
-            
-            # Process subnets
-            matching_subnets = []
-            nsg_ids = []
-            
-            if response.data:
-                all_subnets = response.data
                 
-                # Find subnets that contain this IP
-                for subnet in all_subnets:
-                    subnet_prefix = subnet.get('subnetPrefix')
-                    
-                    # Handle case where subnet prefix is an array
-                    if isinstance(subnet_prefix, list):
-                        for prefix in subnet_prefix:
-                            if ip_in_subnet(self.target_ip, prefix):
-                                matching_subnets.append(subnet)
-                                break
-                    else:
-                        if subnet_prefix and ip_in_subnet(self.target_ip, subnet_prefix):
-                            matching_subnets.append(subnet)
+                nic_query = f"""
+                Resources
+                | where type =~ 'microsoft.network/networkinterfaces'
+                | where properties.ipConfigurations[0].properties.privateIPAddress =~ '{self.target_ip}'
+                | project id, name, resourceGroup, location, 
+                         nsgId = tostring(properties.networkSecurityGroup.id)
+                """
                 
-                # Save matching subnets
-                if matching_subnets:
-                    save_json(matching_subnets, os.path.join(self.output_dir, "matching_subnets.json"))
-                    print_success(f"Found {len(matching_subnets)} subnets that contain IP {self.target_ip}")
-                    
-                    # Extract NSG IDs from matching subnets
-                    for subnet in matching_subnets:
-                        nsg_id = subnet.get('nsgId')
+                request = QueryRequest(query=nic_query, subscriptions=[self.subscription_id])
+                response = graph_client.resources(request)
+                
+                if response.data:
+                    print_success(f"找到{len(response.data)}个使用IP {self.target_ip}的网络接口")
+                    for nic in response.data:
+                        nsg_id = nic.get('nsgId')
                         if nsg_id and nsg_id not in nsg_ids:
                             nsg_ids.append(nsg_id)
+                            print_success(f"从网络接口找到NSG: {nsg_id}")
+                else:
+                    print_warning(f"未找到使用IP {self.target_ip}的网络接口")
+            except Exception as graph_error:
+                print_warning(f"Resource Graph查询网络接口失败: {str(graph_error)}")
+                
+                # 方法1.2: 备选使用Azure CLI
+                try:
+                    print_info("备选方法: 使用Azure CLI查询网络接口...")
+                    import subprocess
+                    import json
                     
-                    if nsg_ids:
-                        print_success(f"Found {len(nsg_ids)} NSGs associated with subnets containing this IP")
-                        # Store for later use in find_flow_logs
-                        self.subnet_nsg_ids = nsg_ids
-                        self.find_flow_logs()
-                        return True
+                    cmd = f"az network nic list --query \"[?ipConfigurations[0].privateIpAddress=='{self.target_ip}'].{{id:id, name:name, nsgId:networkSecurityGroup.id}}\" -o json"
+                    result = subprocess.run(cmd, shell=True, capture_output=True, text=True, check=False)
+                    
+                    if result.returncode == 0 and result.stdout.strip():
+                        nics = json.loads(result.stdout)
+                        print_success(f"使用CLI找到{len(nics)}个使用IP {self.target_ip}的网络接口")
+                        
+                        for nic in nics:
+                            nsg_id = nic.get('nsgId')
+                            if nsg_id and nsg_id not in nsg_ids:
+                                nsg_ids.append(nsg_id)
+                                print_success(f"从网络接口(CLI)找到NSG: {nsg_id}")
                     else:
-                        print_warning("No NSGs found for matching subnets")
-                else:
-                    print_warning(f"No subnets found that contain IP {self.target_ip}")
+                        print_warning(f"CLI未找到使用IP {self.target_ip}的网络接口")
+                except Exception as cli_error:
+                    print_warning(f"Azure CLI查询网络接口失败: {str(cli_error)}")
+        except Exception as nic_error:
+            print_warning(f"查询网络接口相关NSG失败: {str(nic_error)}")
             
+        # 2. 查找包含此IP的子网及其关联的NSG
+        if not nsg_ids:  # 如果还没有找到NSG，继续尝试查找子网
+            try:
+                print_info("\n方法2: 查找包含此IP的子网及关联的NSG...")
+                
+                # 2.1 查询所有VNET和子网
+                try:
+                    from azure.mgmt.resourcegraph import ResourceGraphClient
+                    from azure.mgmt.resourcegraph.models import QueryRequest
+                    
+                    if not 'graph_client' in locals():
+                        graph_client = ResourceGraphClient(self.credential)
+                    
+                    subnet_query = """
+                    Resources
+                    | where type =~ 'microsoft.network/virtualnetworks'
+                    | mv-expand subnet=properties.subnets
+                    | project vnetName=name, vnetId=id, 
+                             resourceGroup=resourceGroup,
+                             subnetName=subnet.name, 
+                             subnetPrefix=subnet.properties.addressPrefix,
+                             subnetId=subnet.id, 
+                             nsgId=tostring(subnet.properties.networkSecurityGroup.id)
+                    """
+                    
+                    request = QueryRequest(query=subnet_query, subscriptions=[self.subscription_id])
+                    subnet_response = graph_client.resources(request)
+                    
+                    if subnet_response.data:
+                        subnets = subnet_response.data
+                        print_success(f"找到{len(subnets)}个子网，现在检查哪些包含IP {self.target_ip}")
+                        save_json(subnets, os.path.join(self.output_dir, "all_subnets_detail.json"))
+                        
+                        # 转换IP为整数，用于子网范围检查
+                        ip_parts = self.target_ip.split('.')
+                        if len(ip_parts) != 4:
+                            raise ValueError(f"无效的IP地址格式: {self.target_ip}")
+                            
+                        ip_int = (int(ip_parts[0]) << 24) + (int(ip_parts[1]) << 16) + (int(ip_parts[2]) << 8) + int(ip_parts[3])
+                        
+                        # 检查IP是否在每个子网范围内
+                        matching_subnets = []
+                        
+                        for subnet in subnets:
+                            subnet_prefix = subnet.get('subnetPrefix')
+                            
+                            # 有些子网前缀可能是数组
+                            prefixes = []
+                            if isinstance(subnet_prefix, list):
+                                prefixes.extend(subnet_prefix)
+                            else:
+                                prefixes.append(subnet_prefix)
+                                
+                            for prefix in prefixes:
+                                if prefix and self._ip_in_subnet(ip_int, prefix):
+                                    matching_subnets.append(subnet)
+                                    print_success(f"IP {self.target_ip}在子网{subnet.get('subnetName')}的范围{prefix}内")
+                                    
+                                    # 获取子网关联的NSG
+                                    nsg_id = subnet.get('nsgId')
+                                    if nsg_id and nsg_id not in nsg_ids:
+                                        nsg_ids.append(nsg_id)
+                                        print_success(f"从子网{subnet.get('subnetName')}找到NSG: {nsg_id}")
+                                    break
+                        
+                        # 保存匹配的子网
+                        if matching_subnets:
+                            save_json(matching_subnets, os.path.join(self.output_dir, "matching_subnets_detail.json"))
+                        else:
+                            print_warning(f"未找到包含IP {self.target_ip}的子网")
+                            
+                            # 2.2 尝试使用Azure CLI查找子网
+                            if not nsg_ids:
+                                try:
+                                    self._find_subnets_with_cli()
+                                except Exception as cli_subnet_error:
+                                    print_warning(f"使用CLI查找子网失败: {str(cli_subnet_error)}")
+                    else:
+                        print_warning("未找到虚拟网络或子网信息")
+                except Exception as subnet_error:
+                    print_warning(f"查询子网信息失败: {str(subnet_error)}")
+                    
+                    # 备选方案：使用Azure CLI
+                    try:
+                        self._find_subnets_with_cli()
+                    except Exception as cli_error:
+                        print_warning(f"使用CLI查找子网失败: {str(cli_error)}")
+            except Exception as subnet_process_error:
+                print_warning(f"处理子网信息时出错: {str(subnet_process_error)}")
+                
+        # 3. 直接查询NSG，看是否有规则引用了此IP (不太推荐，因为NSG引用IP不代表流量会通过它)
+        try:
+            print_info("\n方法3: 查询直接引用此IP的NSG规则...")
+            
+            try:
+                from azure.mgmt.resourcegraph import ResourceGraphClient
+                from azure.mgmt.resourcegraph.models import QueryRequest
+                
+                if not 'graph_client' in locals():
+                    graph_client = ResourceGraphClient(self.credential)
+                
+                nsg_query = f"""
+                Resources
+                | where type =~ 'microsoft.network/networksecuritygroups'
+                | where properties.securityRules[*].properties.sourceAddressPrefix contains '{self.target_ip}'
+                   or properties.securityRules[*].properties.destinationAddressPrefix contains '{self.target_ip}'
+                | project id, name, resourceGroup, location
+                """
+                
+                request = QueryRequest(query=nsg_query, subscriptions=[self.subscription_id])
+                nsg_response = graph_client.resources(request)
+                
+                if nsg_response.data:
+                    print_success(f"找到{len(nsg_response.data)}个直接引用IP {self.target_ip}的NSG")
+                    for nsg in nsg_response.data:
+                        nsg_id = nsg.get('id')
+                        if nsg_id and nsg_id not in nsg_ids:
+                            nsg_ids.append(nsg_id)
+                            print_success(f"找到引用IP的NSG: {nsg_id}")
+                else:
+                    print_warning(f"未找到直接引用IP {self.target_ip}的NSG")
+            except Exception as rule_error:
+                print_warning(f"查询NSG规则失败: {str(rule_error)}")
+        except Exception as nsg_rule_error:
+            print_warning(f"查询引用IP的NSG规则失败: {str(nsg_rule_error)}")
+        
+        # 打印结果
+        if nsg_ids:
+            print_success(f"总共找到{len(nsg_ids)}个与IP {self.target_ip}相关的NSG")
+            save_json(nsg_ids, os.path.join(self.output_dir, "related_nsg_ids.json"))
+        else:
+            print_warning(f"未找到与IP {self.target_ip}相关的NSG")
+            
+        return nsg_ids
+            
+    def _ip_in_subnet(self, ip_int: int, subnet_prefix: str) -> bool:
+        """
+        检查IP是否在给定的子网范围内。
+        
+        Args:
+            ip_int: IP地址的整数表示
+            subnet_prefix: 子网前缀，格式为"x.x.x.x/y"
+            
+        Returns:
+            bool: 如果IP在子网范围内，返回True
+        """
+        try:
+            # 解析子网前缀 (例如 "10.0.0.0/24")
+            subnet_addr, subnet_mask = subnet_prefix.split('/')
+            subnet_mask = int(subnet_mask)
+            
+            # 解析子网地址
+            subnet_parts = subnet_addr.split('.')
+            if len(subnet_parts) != 4:
+                return False
+                
+            # 将子网转换为整数
+            subnet_int = (int(subnet_parts[0]) << 24) + (int(subnet_parts[1]) << 16) + \
+                         (int(subnet_parts[2]) << 8) + int(subnet_parts[3])
+                         
+            # 计算掩码
+            mask_int = (0xFFFFFFFF << (32 - subnet_mask)) & 0xFFFFFFFF
+            
+            # 检查IP是否在子网范围内
+            return (ip_int & mask_int) == (subnet_int & mask_int)
+        except (ValueError, IndexError) as e:
+            print_warning(f"解析子网前缀时出错: {subnet_prefix}, 错误: {str(e)}")
             return False
-        except Exception as e:
-            print_error(f"Error finding subnets: {str(e)}")
-            return False
-    
-    def _fallback_to_azure_cli(self):
-        """Fallback method using Azure CLI when Resource Graph queries fail."""
-        print_info("Attempting to use Azure CLI directly...")
+            
+    def _find_subnets_with_cli(self) -> List[str]:
+        """使用Azure CLI查找包含目标IP的子网。"""
+        print_info(f"使用Azure CLI查询包含IP {self.target_ip}的子网...")
+        nsg_ids = []
+        
         import subprocess
         import json
         
-        # 1. Query network interfaces with this IP
-        print_info(f"Querying for network interfaces with IP {self.target_ip} using Azure CLI...")
-        cmd = f"az graph query -q \"Resources | where type =~ 'microsoft.network/networkinterfaces' | where properties.ipConfigurations[0].properties.privateIPAddress =~ '{self.target_ip}' | project id, name, resourceGroup, subscriptionId, location, vnetId = tostring(properties.ipConfigurations[0].properties.subnet.id), nsgId = tostring(properties.networkSecurityGroup.id)\" --query \"data\" -o json"
-        
         try:
-            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, check=False)
-            if result.returncode == 0 and result.stdout.strip():
-                self.associated_resources = json.loads(result.stdout)
-                save_json(self.associated_resources, os.path.join(self.output_dir, "associated_resources.json"))
-                print_success(f"Found {len(self.associated_resources)} resources with IP {self.target_ip} (using CLI)")
-                
-                # Extract NSG IDs
-                nsg_ids = []
-                for resource in self.associated_resources:
-                    nsg_id = resource.get('nsgId')
-                    if nsg_id and nsg_id not in nsg_ids:
-                        nsg_ids.append(nsg_id)
-                
-                if nsg_ids:
-                    self.subnet_nsg_ids = nsg_ids
-                    print_success(f"Found {len(nsg_ids)} associated NSGs")
-                    self.find_flow_logs()
-                    return True
-                else:
-                    # If no NSGs found directly with NIC, try to find subnets
-                    print_warning("No NSGs directly associated with network interface, trying to find subnet NSGs...")
-                    self._find_subnets_cli()
-            else:
-                print_warning(f"No resources with IP {self.target_ip} found using Azure CLI")
-                self._find_subnets_cli()
-                
-        except Exception as cli_error:
-            print_error(f"Error using Azure CLI: {str(cli_error)}")
-            return False
-    
-    def _find_subnets_cli(self):
-        """Find subnets containing the target IP using Azure CLI."""
-        print_info(f"Finding subnets containing IP {self.target_ip} using Azure CLI...")
-        import subprocess
-        import json
-        
-        try:
-            # First get all VNETs
-            cmd_vnets = "az graph query -q \"Resources | where type =~ 'microsoft.network/virtualnetworks' | project id, name, resourceGroup, properties.subnets\" --query \"data\" -o json"
-            result = subprocess.run(cmd_vnets, shell=True, capture_output=True, text=True, check=False)
+            # 获取所有VNET
+            cmd_vnets = "az network vnet list --query \"[].{id:id, name:name, resourceGroup:resourceGroup, subnets:subnets}\" -o json"
+            vnet_result = subprocess.run(cmd_vnets, shell=True, capture_output=True, text=True, check=False)
             
-            if result.returncode == 0 and result.stdout.strip():
-                vnets = json.loads(result.stdout)
+            if vnet_result.returncode == 0 and vnet_result.stdout.strip():
+                vnets = json.loads(vnet_result.stdout)
+                print_success(f"找到{len(vnets)}个VNET")
                 
-                # Parse IP to components for subnet check
+                # 解析IP
                 ip_parts = self.target_ip.split('.')
                 if len(ip_parts) != 4:
-                    print_error(f"Invalid IP address format: {self.target_ip}")
-                    return False
+                    print_error(f"无效的IP地址格式: {self.target_ip}")
+                    return []
                 
                 ip_int = (int(ip_parts[0]) << 24) + (int(ip_parts[1]) << 16) + (int(ip_parts[2]) << 8) + int(ip_parts[3])
                 
-                # Function to check if IP is in subnet
-                def ip_in_subnet(ip_addr, subnet_prefix):
-                    try:
-                        subnet_addr, subnet_mask = subnet_prefix.split('/')
-                        subnet_mask = int(subnet_mask)
-                        
-                        subnet_parts = subnet_addr.split('.')
-                        if len(subnet_parts) != 4:
-                            return False
-                            
-                        subnet_int = (int(subnet_parts[0]) << 24) + (int(subnet_parts[1]) << 16) + \
-                                     (int(subnet_parts[2]) << 8) + int(subnet_parts[3])
-                                     
-                        mask_int = (0xFFFFFFFF << (32 - subnet_mask)) & 0xFFFFFFFF
-                        
-                        return (ip_int & mask_int) == (subnet_int & mask_int)
-                    except:
-                        return False
-                
-                matching_subnets = []
-                nsg_ids = []
-                
+                # 检查每个VNET的子网
                 for vnet in vnets:
-                    subnets = vnet.get('properties.subnets', [])
-                    for subnet in subnets:
-                        prefix = subnet.get('properties', {}).get('addressPrefix')
-                        if prefix and ip_in_subnet(self.target_ip, prefix):
-                            matching_subnets.append({
-                                'vnetName': vnet.get('name'),
-                                'vnetId': vnet.get('id'),
-                                'subnetName': subnet.get('name'),
-                                'subnetPrefix': prefix,
-                                'subnetId': subnet.get('id'),
-                                'nsgId': subnet.get('properties', {}).get('networkSecurityGroup', {}).get('id')
-                            })
-                            
-                            nsg_id = subnet.get('properties', {}).get('networkSecurityGroup', {}).get('id')
-                            if nsg_id and nsg_id not in nsg_ids:
-                                nsg_ids.append(nsg_id)
-                
-                if matching_subnets:
-                    save_json(matching_subnets, os.path.join(self.output_dir, "matching_subnets.json"))
-                    print_success(f"Found {len(matching_subnets)} subnets containing IP {self.target_ip} (using CLI)")
+                    vnet_name = vnet.get('name')
+                    resource_group = vnet.get('resourceGroup')
                     
-                    if nsg_ids:
-                        self.subnet_nsg_ids = nsg_ids
-                        print_success(f"Found {len(nsg_ids)} NSGs associated with subnets (using CLI)")
-                        self.find_flow_logs()
-                        return True
-                    else:
-                        print_warning("No NSGs found for matching subnets")
-                else:
-                    print_warning(f"No subnets found containing IP {self.target_ip} (using CLI)")
+                    # 获取VNET的详细子网信息
+                    cmd_subnets = f"az network vnet subnet list --resource-group {resource_group} --vnet-name {vnet_name} -o json"
+                    subnet_result = subprocess.run(cmd_subnets, shell=True, capture_output=True, text=True, check=False)
+                    
+                    if subnet_result.returncode == 0 and subnet_result.stdout.strip():
+                        subnets = json.loads(subnet_result.stdout)
+                        
+                        for subnet in subnets:
+                            subnet_name = subnet.get('name')
+                            address_prefix = subnet.get('addressPrefix')
+                            
+                            # 检查IP是否在子网范围内
+                            if address_prefix and self._ip_in_subnet(ip_int, address_prefix):
+                                print_success(f"IP {self.target_ip}在VNET '{vnet_name}'的子网'{subnet_name}'范围'{address_prefix}'内")
+                                
+                                # 获取子网关联的NSG
+                                nsg = subnet.get('networkSecurityGroup', {})
+                                if nsg:
+                                    nsg_id = nsg.get('id')
+                                    if nsg_id and nsg_id not in nsg_ids:
+                                        nsg_ids.append(nsg_id)
+                                        print_success(f"从子网'{subnet_name}'找到NSG: {nsg_id}")
+                                else:
+                                    print_warning(f"子网'{subnet_name}'没有关联的NSG")
             else:
-                print_warning("Failed to retrieve virtual networks (using CLI)")
+                print_warning("无法获取VNET列表")
                 
-            return False
-        except Exception as e:
-            print_error(f"Error finding subnets using CLI: {str(e)}")
-            return False
-
+            # 打印结果
+            if nsg_ids:
+                print_success(f"通过CLI找到{len(nsg_ids)}个与IP {self.target_ip}相关的NSG")
+                # 更新现有的NSG ID列表
+                for nsg_id in nsg_ids:
+                    if nsg_id not in self.subnet_nsg_ids:
+                        self.subnet_nsg_ids.append(nsg_id)
+                save_json(self.subnet_nsg_ids, os.path.join(self.output_dir, "related_nsg_ids.json"))
+                
+            return nsg_ids
+        except Exception as cli_error:
+            print_error(f"使用CLI查询子网时出错: {str(cli_error)}")
+            return []
+    
     def find_flow_logs(self) -> None:
         """Find NSG flow logs for relevant NSGs."""
         print_info(f"\n[3/5] Finding NSG flow logs...")
