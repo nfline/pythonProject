@@ -305,96 +305,13 @@ def get_log_analytics_workspaces(flow_logs_config: Dict[str, Dict]) -> Dict[str,
     
     return workspace_ids
 
-def generate_kql_query(target_ip: str, 
-                      flow_logs_config: Dict[str, Dict], 
-                      workspace_ids: Dict[str, str],
-                      time_range_hours: int = 24) -> Dict[str, str]:
-    """Generate KQL queries for each workspace"""
-    print_info("\nStep 6: Generating KQL queries...")
-    output_dir = "output"
-    os.makedirs(output_dir, exist_ok=True)
-    
-    kql_queries = {}
-    
-    # Get current time and time range
-    end_time = datetime.utcnow()
-    start_time = end_time - timedelta(hours=time_range_hours)
-    
-    # Format times for KQL query
-    start_time_str = start_time.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-    end_time_str = end_time.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-    
-    # Create a mapping of workspace ID to NSG IDs
-    workspace_to_nsgs = {}
-    for nsg_id, workspace_id in workspace_ids.items():
-        if workspace_id not in workspace_to_nsgs:
-            workspace_to_nsgs[workspace_id] = []
-        workspace_to_nsgs[workspace_id].append(nsg_id)
-    
-    # Generate KQL query for each workspace
-    for workspace_id, nsg_ids in workspace_to_nsgs.items():
-        # Create NSG filter condition
-        nsg_names = []
-        for nsg_id in nsg_ids:
-            nsg_name = nsg_id.split('/')[-1]
-            nsg_names.append(nsg_name)
-        
-        nsg_filter = " or ".join([f"NSGName_s == \"{name}\"" for name in nsg_names])
-        
-        # Basic KQL query for NSG flow logs
-        query = f"""
-AzureNetworkAnalytics_CL
-| where TimeGenerated between (datetime({start_time_str}) .. datetime({end_time_str}))
-| where FlowType_s == "Flow" 
-| where ({nsg_filter})
-| where SrcIP_s == "{target_ip}" or DestIP_s == "{target_ip}"
-| project TimeGenerated, 
-          NSGName_s, 
-          FlowDirection_s, 
-          SrcIP_s, 
-          DestIP_s, 
-          SrcPort_d, 
-          DestPort_d, 
-          Protocol_s, 
-          FlowStatus_s,
-          L7Protocol_s,
-          AllowedInFlows_d,
-          AllowedOutFlows_d,
-          DeniedInFlows_d,
-          DeniedOutFlows_d
-| sort by TimeGenerated desc
-"""
-        
-        # Create a short name for the workspace for filename
-        workspace_short_id = workspace_id.split('/')[-1]
-        
-        # Save the query to a file
-        query_filename = f"kql_query_{workspace_short_id}.kql"
-        query_path = os.path.join(output_dir, query_filename)
-        
-        with open(query_path, 'w') as f:
-            f.write(query)
-        
-        print_success(f"Generated KQL query and saved to {query_path}")
-        
-        # Add query to return dictionary
-        kql_queries[workspace_id] = query
-    
-    # Save all queries
-    if kql_queries:
-        save_json({k: v for k, v in kql_queries.items()}, os.path.join(output_dir, "kql_queries.json"))
-        print_success(f"Generated a total of {len(kql_queries)} KQL queries")
-    else:
-        print_warning("Could not generate any KQL queries")
-    
-    return kql_queries
-
-def execute_kql_query(workspace_id: str, kql_query: str) -> Optional[Dict]:
+def execute_kql_query(workspace_id: str, kql_query: str, timeout_seconds: int = 60) -> Optional[Dict]:
     """Execute a KQL query against a Log Analytics workspace"""
     print_info(f"\nExecuting KQL query against workspace: {workspace_id}")
     
     # Construct Azure CLI command to run the query
-    cmd = f"az monitor log-analytics query --workspace {workspace_id} --analytics-query \"{kql_query}\" -o json"
+    # Add timeout to prevent hanging indefinitely
+    cmd = f"az monitor log-analytics query --workspace {workspace_id} --analytics-query \"{kql_query}\" --timespan {timeout_seconds}m -o json"
     
     # Execute the query
     results = run_command(cmd)
@@ -426,7 +343,132 @@ def execute_kql_query(workspace_id: str, kql_query: str) -> Optional[Dict]:
     
     return results
 
-def analyze_traffic(target_ip: str, time_range_hours: int = 24) -> Dict[str, Any]:
+def generate_simple_kql_query(target_ip: str, time_range_hours: int = 24) -> str:
+    """Generate a simple KQL query without NSG filtering"""
+    
+    # Get current time and time range
+    end_time = datetime.utcnow()
+    start_time = end_time - timedelta(hours=time_range_hours)
+    
+    # Format times for KQL query
+    start_time_str = start_time.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    end_time_str = end_time.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    
+    # Basic KQL query for NSG flow logs without NSG filtering
+    query = f"""
+AzureNetworkAnalytics_CL
+| where TimeGenerated between (datetime({start_time_str}) .. datetime({end_time_str}))
+| where FlowType_s == "Flow"
+| where SrcIP_s == "{target_ip}" or DestIP_s == "{target_ip}"
+| project TimeGenerated, 
+          NSGName_s, 
+          FlowDirection_s, 
+          SrcIP_s, 
+          DestIP_s, 
+          SrcPort_d, 
+          DestPort_d, 
+          Protocol_s, 
+          FlowStatus_s,
+          L7Protocol_s,
+          AllowedInFlows_d,
+          AllowedOutFlows_d,
+          DeniedInFlows_d,
+          DeniedOutFlows_d
+| sort by TimeGenerated desc
+| limit 1000
+"""
+    return query
+
+def generate_kql_query(target_ip: str, 
+                      flow_logs_config: Dict[str, Dict], 
+                      workspace_ids: Dict[str, str],
+                      time_range_hours: int = 24,
+                      filter_by_nsg: bool = True) -> Dict[str, str]:
+    """Generate KQL queries for each workspace"""
+    print_info("\nStep 6: Generating KQL queries...")
+    output_dir = "output"
+    os.makedirs(output_dir, exist_ok=True)
+    
+    kql_queries = {}
+    
+    # Get current time and time range
+    end_time = datetime.utcnow()
+    start_time = end_time - timedelta(hours=time_range_hours)
+    
+    # Format times for KQL query
+    start_time_str = start_time.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    end_time_str = end_time.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    
+    # Create a mapping of workspace ID to NSG IDs
+    workspace_to_nsgs = {}
+    for nsg_id, workspace_id in workspace_ids.items():
+        if workspace_id not in workspace_to_nsgs:
+            workspace_to_nsgs[workspace_id] = []
+        workspace_to_nsgs[workspace_id].append(nsg_id)
+    
+    # Generate KQL query for each workspace
+    for workspace_id, nsg_ids in workspace_to_nsgs.items():
+        # Create NSG filter condition if needed
+        nsg_filter = ""
+        if filter_by_nsg:
+            nsg_names = []
+            for nsg_id in nsg_ids:
+                nsg_name = nsg_id.split('/')[-1]
+                nsg_names.append(nsg_name)
+            
+            # Only add NSG filter if we have NSGs to filter
+            if nsg_names:
+                nsg_filter = f"| where ({' or '.join([f'NSGName_s == \"{name}\"' for name in nsg_names])})\n"
+        
+        # Basic KQL query for NSG flow logs
+        query = f"""
+AzureNetworkAnalytics_CL
+| where TimeGenerated between (datetime({start_time_str}) .. datetime({end_time_str}))
+| where FlowType_s == "Flow" 
+{nsg_filter}| where SrcIP_s == "{target_ip}" or DestIP_s == "{target_ip}"
+| project TimeGenerated, 
+          NSGName_s, 
+          FlowDirection_s, 
+          SrcIP_s, 
+          DestIP_s, 
+          SrcPort_d, 
+          DestPort_d, 
+          Protocol_s, 
+          FlowStatus_s,
+          L7Protocol_s,
+          AllowedInFlows_d,
+          AllowedOutFlows_d,
+          DeniedInFlows_d,
+          DeniedOutFlows_d
+| sort by TimeGenerated desc
+| limit 1000
+"""
+        
+        # Create a short name for the workspace for filename
+        workspace_short_id = workspace_id.split('/')[-1]
+        
+        # Save the query to a file
+        query_filename = f"kql_query_{workspace_short_id}.kql"
+        query_path = os.path.join(output_dir, query_filename)
+        
+        with open(query_path, 'w') as f:
+            f.write(query)
+        
+        print_success(f"Generated KQL query and saved to {query_path}")
+        
+        # Add query to return dictionary
+        kql_queries[workspace_id] = query
+    
+    # Save all queries
+    if kql_queries:
+        save_json({k: v for k, v in kql_queries.items()}, os.path.join(output_dir, "kql_queries.json"))
+        print_success(f"Generated a total of {len(kql_queries)} KQL queries")
+    else:
+        print_warning("Could not generate any KQL queries")
+    
+    return kql_queries
+
+def analyze_traffic(target_ip: str, time_range_hours: int = 24, filter_by_nsg: bool = True, execute_query: bool = False, timeout_seconds: int = 60) -> Dict[str, Any]:
     """Main function to analyze traffic for an IP address"""
     output_dir = "output"
     os.makedirs(output_dir, exist_ok=True)
@@ -446,7 +488,24 @@ def analyze_traffic(target_ip: str, time_range_hours: int = 24) -> Dict[str, Any
     results["nsg_ids"] = nsg_ids
     
     if not nsg_ids:
-        print_warning("No NSGs found for the IP, cannot continue")
+        print_warning("No NSGs found for the IP, but we can still try direct KQL query")
+        
+        # Ask user if they want to proceed with direct query
+        if execute_query or input("\nDo you want to proceed with direct KQL query without NSG information? (y/n): ").lower().strip() == 'y':
+            workspace_id = input("\nPlease enter the Log Analytics workspace ID: ").strip()
+            if workspace_id:
+                query = generate_simple_kql_query(target_ip, time_range_hours)
+                result_path = os.path.join(output_dir, f"simple_kql_query.kql")
+                with open(result_path, 'w') as f:
+                    f.write(query)
+                print_success(f"Generated simple KQL query and saved to {result_path}")
+                
+                if execute_query or input("\nDo you want to execute this query now? (y/n): ").lower().strip() == 'y':
+                    query_results = execute_kql_query(workspace_id, query, timeout_seconds)
+                    results["kql_results"][workspace_id] = query_results
+            else:
+                print_warning("No workspace ID provided, cannot proceed with query")
+        
         save_json(results, os.path.join(output_dir, "analysis_results.json"))
         return results
     
@@ -456,7 +515,23 @@ def analyze_traffic(target_ip: str, time_range_hours: int = 24) -> Dict[str, Any
     results["flow_logs_config"] = flow_logs_config
     
     if not flow_logs_config:
-        print_warning("No NSG flow logs configuration found, cannot continue")
+        print_warning("No NSG flow logs configuration found, trying direct query")
+        
+        if execute_query or input("\nDo you want to proceed with direct KQL query without flow logs configuration? (y/n): ").lower().strip() == 'y':
+            workspace_id = input("\nPlease enter the Log Analytics workspace ID: ").strip()
+            if workspace_id:
+                query = generate_simple_kql_query(target_ip, time_range_hours)
+                result_path = os.path.join(output_dir, f"simple_kql_query.kql")
+                with open(result_path, 'w') as f:
+                    f.write(query)
+                print_success(f"Generated simple KQL query and saved to {result_path}")
+                
+                if execute_query or input("\nDo you want to execute this query now? (y/n): ").lower().strip() == 'y':
+                    query_results = execute_kql_query(workspace_id, query, timeout_seconds)
+                    results["kql_results"][workspace_id] = query_results
+            else:
+                print_warning("No workspace ID provided, cannot proceed with query")
+                
         save_json(results, os.path.join(output_dir, "analysis_results.json"))
         return results
     
@@ -466,13 +541,33 @@ def analyze_traffic(target_ip: str, time_range_hours: int = 24) -> Dict[str, Any
     results["workspaces"] = workspace_ids
     
     if not workspace_ids:
-        print_warning("No Log Analytics workspace IDs found, cannot continue")
+        print_warning("No Log Analytics workspace IDs found, asking for manual input")
+        
+        if execute_query or input("\nDo you want to proceed with direct KQL query by entering workspace ID manually? (y/n): ").lower().strip() == 'y':
+            workspace_id = input("\nPlease enter the Log Analytics workspace ID: ").strip()
+            if workspace_id:
+                # Add the workspace ID to results
+                results["workspaces"]["manual"] = workspace_id
+                
+                # Create a simple query based on IP only
+                query = generate_simple_kql_query(target_ip, time_range_hours)
+                result_path = os.path.join(output_dir, f"simple_kql_query.kql")
+                with open(result_path, 'w') as f:
+                    f.write(query)
+                print_success(f"Generated simple KQL query and saved to {result_path}")
+                
+                if execute_query or input("\nDo you want to execute this query now? (y/n): ").lower().strip() == 'y':
+                    query_results = execute_kql_query(workspace_id, query, timeout_seconds)
+                    results["kql_results"][workspace_id] = query_results
+            else:
+                print_warning("No workspace ID provided, cannot proceed with query")
+                
         save_json(results, os.path.join(output_dir, "analysis_results.json"))
         return results
     
     # Step 4: Generate KQL queries
     print_info("\n====== Phase 4: Generating KQL queries ======")
-    kql_queries = generate_kql_query(target_ip, flow_logs_config, workspace_ids, time_range_hours)
+    kql_queries = generate_kql_query(target_ip, flow_logs_config, workspace_ids, time_range_hours, filter_by_nsg)
     results["kql_queries"] = kql_queries
     
     if not kql_queries:
@@ -481,11 +576,11 @@ def analyze_traffic(target_ip: str, time_range_hours: int = 24) -> Dict[str, Any
         return results
     
     # Step 5: Execute KQL queries (optional)
-    should_execute = input("\nDo you want to execute the KQL queries? (y/n): ").lower().strip() == 'y'
+    should_execute = execute_query or input("\nDo you want to execute the KQL queries? (y/n): ").lower().strip() == 'y'
     if should_execute:
         print_info("\n====== Phase 5: Executing KQL queries ======")
         for workspace_id, query in kql_queries.items():
-            query_results = execute_kql_query(workspace_id, query)
+            query_results = execute_kql_query(workspace_id, query, timeout_seconds)
             results["kql_results"][workspace_id] = query_results
     
     # Save final results
@@ -500,6 +595,10 @@ def main():
     parser.add_argument('--time-range', type=int, default=24, help='Time range in hours for traffic analysis (default: 24)')
     parser.add_argument('--analyze', action='store_true', help='Perform full traffic analysis including KQL query generation')
     parser.add_argument('--execute', action='store_true', help='Execute KQL queries automatically (implies --analyze)')
+    parser.add_argument('--timeout', type=int, default=60, help='Timeout in seconds for KQL query execution (default: 60)')
+    parser.add_argument('--no-nsg-filter', action='store_true', help='Do not filter KQL queries by NSG names')
+    parser.add_argument('--direct-query', action='store_true', help='Skip NSG discovery and directly query by IP')
+    parser.add_argument('--workspace-id', help='Directly specify Log Analytics workspace ID')
     
     args = parser.parse_args()
     
@@ -515,26 +614,64 @@ def main():
     print_info("=" * 60)
     print(f"Target IP: {args.ip_address}")
     print(f"Time range: {args.time_range} hours")
-    if args.analyze or args.execute:
+    
+    # Display analysis mode
+    if args.direct_query:
+        print("Analysis mode: Direct KQL query")
+    elif args.analyze or args.execute:
         print(f"Analysis mode: {'Full with query execution' if args.execute else 'Full'}")
     else:
         print("Analysis mode: Basic (NSG discovery only)")
+    
+    # Display filter settings
+    if args.no_nsg_filter:
+        print("NSG filtering: Disabled")
+    
     print_info("=" * 60)
     
-    if args.execute:
+    # Direct query mode
+    if args.direct_query:
+        if not args.workspace_id:
+            args.workspace_id = input("\nPlease enter the Log Analytics workspace ID: ").strip()
+            if not args.workspace_id:
+                print_error("Workspace ID is required for direct query mode")
+                sys.exit(1)
+        
+        output_dir = "output"
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Generate a simple query
+        query = generate_simple_kql_query(args.ip_address, args.time_range)
+        result_path = os.path.join(output_dir, f"direct_kql_query.kql")
+        with open(result_path, 'w') as f:
+            f.write(query)
+        print_success(f"Generated direct KQL query and saved to {result_path}")
+        
+        # Execute if requested
+        if args.execute:
+            print_info("\n====== Executing Direct KQL Query ======")
+            results = execute_kql_query(args.workspace_id, query, args.timeout)
+            save_json(results or {}, os.path.join(output_dir, "direct_query_results.json"))
+    elif args.execute:
         # Full analysis with query execution
-        results = analyze_traffic(args.ip_address, args.time_range)
-        # Force query execution
-        if "kql_queries" in results and results["kql_queries"]:
-            print_info("\n====== Phase 5: Executing KQL queries ======")
-            for workspace_id, query in results["kql_queries"].items():
-                query_results = execute_kql_query(workspace_id, query)
-                results["kql_results"][workspace_id] = query_results
-            # Save updated results
-            save_json(results, os.path.join("output", "analysis_results.json"))
+        analyze_traffic(args.ip_address, args.time_range, not args.no_nsg_filter, True, args.timeout)
     elif args.analyze:
         # Perform full analysis
-        analyze_traffic(args.ip_address, args.time_range)
+        analyze_traffic(args.ip_address, args.time_range, not args.no_nsg_filter)
+    elif args.workspace_id:
+        # If workspace ID is provided, perform simple query
+        output_dir = "output"
+        os.makedirs(output_dir, exist_ok=True)
+        
+        query = generate_simple_kql_query(args.ip_address, args.time_range)
+        result_path = os.path.join(output_dir, f"workspace_query.kql")
+        with open(result_path, 'w') as f:
+            f.write(query)
+        print_success(f"Generated KQL query for specified workspace and saved to {result_path}")
+        
+        if input("\nDo you want to execute this query now? (y/n): ").lower().strip() == 'y':
+            results = execute_kql_query(args.workspace_id, query, args.timeout)
+            save_json(results or {}, os.path.join(output_dir, "workspace_query_results.json"))
     else:
         # Just find NSGs
         nsg_ids = find_nsgs_by_ip(args.ip_address)
@@ -545,6 +682,21 @@ def main():
             print_info("To perform full traffic analysis, run the script with the --analyze parameter")
         else:
             print_warning("\nSearch completed, but no NSGs found.")
+            if input("Do you want to proceed with direct KQL query? (y/n): ").lower().strip() == 'y':
+                workspace_id = input("\nPlease enter the Log Analytics workspace ID: ").strip()
+                if workspace_id:
+                    output_dir = "output"
+                    os.makedirs(output_dir, exist_ok=True)
+                    
+                    query = generate_simple_kql_query(args.ip_address, args.time_range)
+                    result_path = os.path.join(output_dir, f"direct_kql_query.kql")
+                    with open(result_path, 'w') as f:
+                        f.write(query)
+                    print_success(f"Generated KQL query and saved to {result_path}")
+                    
+                    if input("\nDo you want to execute this query now? (y/n): ").lower().strip() == 'y':
+                        results = execute_kql_query(workspace_id, query, args.timeout)
+                        save_json(results or {}, os.path.join(output_dir, "direct_query_results.json"))
     
 if __name__ == "__main__":
     main()
