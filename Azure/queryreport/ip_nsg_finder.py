@@ -530,31 +530,27 @@ def generate_simple_kql_query(target_ip: str, time_range_hours: int = 24) -> str
     start_time_str = start_time.strftime("%Y-%m-%dT%H:%M:%S.%f")[:23] + "Z"
     end_time_str = end_time.strftime("%Y-%m-%dT%H:%M:%S.%f")[:23] + "Z"
     
-    # Updated KQL query format
+    # KQL query targeting only AzureNetworkAnalytics_CL based on provided correct format
     query = f"""
 // KQL Query Parameters: IP={target_ip}, Time Range={time_range_hours} hours
-union 
-(AzureNetworkAnalytics_CL
+AzureNetworkAnalytics_CL
 | where TimeGenerated between (datetime({start_time_str}) .. datetime({end_time_str}))
-| where FlowStatus_s == "A"
-| where SrcIP_s == "{target_ip}" or DestIP_s == "{target_ip}"),
-(NetworkMonitoring
-| where TimeGenerated between (datetime({start_time_str}) .. datetime({end_time_str}))
-| where SrcIP == "{target_ip}" or DestIP == "{target_ip}")
-| project 
+| where FlowStatus_s == "A" // Assuming 'A' means Allowed/Accepted flow
+| where SrcIP_s == "{target_ip}" or DestIP_s == "{target_ip}"
+| project
     TimeGenerated,
-    FlowDirection_s = column_ifexists("FlowDirection_s", ""),
-    SrcIP_s = column_ifexists("SrcIP_s", column_ifexists("SrcIP", "")),
-    DestIP_s = column_ifexists("DestIP_s", column_ifexists("DestIP", "")),
-    SrcPort_d = column_ifexists("SrcPort_d", column_ifexists("SrcPort", 0)),
-    DestPort_d = column_ifexists("DestPort_d", column_ifexists("DestPort", 0)),
-    Protocol_s = column_ifexists("Protocol_s", column_ifexists("Protocol", "")),
-    FlowStatus_s = column_ifexists("FlowStatus_s", ""),
-    L7Protocol_s = column_ifexists("L7Protocol_s", ""),
-    InboundBytes_d = column_ifexists("InboundBytes_d", 0),
-    OutboundBytes_d = column_ifexists("OutboundBytes_d", 0)
+    FlowDirection_s,
+    SrcIP_s,
+    DestIP_s,
+    SrcPort_d,
+    DestPort_d,
+    Protocol_s,
+    FlowStatus_s,
+    L7Protocol_s,
+    InboundBytes_d,
+    OutboundBytes_d
 | sort by TimeGenerated desc
-| limit 100
+| limit 100 // Limit results for performance
 """
     return query
 
@@ -587,32 +583,30 @@ def generate_kql_query(target_ip: str,
             nsg_names = [nsg_id.split('/')[-1] for nsg_id in nsg_ids]
             if nsg_names:
                 nsg_names_str = ", ".join([f'"{name}"' for name in nsg_names])
-                nsg_filter = f"| where column_ifexists(\"NSGName_s\", \"\") in~ ({nsg_names_str})\n"
+                # Assuming the NSG name field is 'NSGName_s' in AzureNetworkAnalytics_CL
+                nsg_filter = f'| where NSGName_s in~ ({nsg_names_str})\n'
         
+        # KQL query targeting only AzureNetworkAnalytics_CL based on provided correct format
         query = f"""
-// KQL Query Parameters: IP={target_ip}, Time Range={time_range_hours} hours, NSG Filter={nsg_names_str}
-union 
-(AzureNetworkAnalytics_CL
+// KQL Query Parameters: IP={target_ip}, Time Range={time_range_hours} hours, NSG Filter Applied={filter_by_nsg and bool(nsg_names_str)}
+AzureNetworkAnalytics_CL
 | where TimeGenerated between (datetime({start_time_str}) .. datetime({end_time_str}))
-| where FlowStatus_s == "A"
-| where SrcIP_s == "{target_ip}" or DestIP_s == "{target_ip}"),
-(NetworkMonitoring
-| where TimeGenerated between (datetime({start_time_str}) .. datetime({end_time_str}))
-| where SrcIP == "{target_ip}" or DestIP == "{target_ip}")
-{nsg_filter}| project 
+| where FlowStatus_s == "A" // Assuming 'A' means Allowed/Accepted flow
+| where SrcIP_s == "{target_ip}" or DestIP_s == "{target_ip}"
+{nsg_filter}| project
     TimeGenerated,
-    FlowDirection_s = column_ifexists("FlowDirection_s", ""),
-    SrcIP_s = column_ifexists("SrcIP_s", column_ifexists("SrcIP", "")),
-    DestIP_s = column_ifexists("DestIP_s", column_ifexists("DestIP", "")),
-    SrcPort_d = column_ifexists("SrcPort_d", column_ifexists("SrcPort", 0)),
-    DestPort_d = column_ifexists("DestPort_d", column_ifexists("DestPort", 0)),
-    Protocol_s = column_ifexists("Protocol_s", column_ifexists("Protocol", "")),
-    FlowStatus_s = column_ifexists("FlowStatus_s", ""),
-    L7Protocol_s = column_ifexists("L7Protocol_s", ""),
-    InboundBytes_d = column_ifexists("InboundBytes_d", 0),
-    OutboundBytes_d = column_ifexists("OutboundBytes_d", 0)
+    FlowDirection_s,
+    SrcIP_s,
+    DestIP_s,
+    SrcPort_d,
+    DestPort_d,
+    Protocol_s,
+    FlowStatus_s,
+    L7Protocol_s,
+    InboundBytes_d,
+    OutboundBytes_d
 | sort by TimeGenerated desc
-| limit 100
+| limit 100 // Limit results for performance
 """
         workspace_short_id = workspace_id.split('/')[-1] if '/' in workspace_id else workspace_id
         query_filename = f"kql_query_{workspace_short_id}.kql"
