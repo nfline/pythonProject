@@ -147,6 +147,20 @@ class AzureIPTrafficAnalyzer:
             # Use subprocess to call az commands directly, similar to the shell script
             import subprocess
             import json
+            import shutil
+            
+            # First check if az command is available
+            az_path = shutil.which("az")
+            if not az_path:
+                print_error("Azure CLI (az command) not found in PATH")
+                print("Please install Azure CLI by following these steps:")
+                print("1. Visit: https://docs.microsoft.com/en-us/cli/azure/install-azure-cli")
+                print("2. Run the installer for Windows")
+                print("3. Restart your terminal/command prompt")
+                print("4. Try running 'az --version' to verify installation")
+                return False
+                
+            print(f"Found Azure CLI at: {az_path}")
             
             # Check if already logged in
             try:
@@ -178,13 +192,13 @@ class AzureIPTrafficAnalyzer:
                     # Run 'az login'
                     login_result = subprocess.run(
                         ["az", "login"],
-                        capture_output=True,
+                        capture_output=False,  # Let the login process show its own output for browser opening
                         text=True,
                         check=False
                     )
                     
                     if login_result.returncode != 0:
-                        print_error(f"Login failed: {login_result.stderr}")
+                        print_error(f"Login failed")
                         return False
                     
                     # Get subscription ID
@@ -230,6 +244,8 @@ class AzureIPTrafficAnalyzer:
                 
         except Exception as e:
             print_error(f"Unexpected error during authentication: {str(e)}")
+            import traceback
+            traceback.print_exc()
             return False
 
     def find_resources_by_ip(self) -> None:
