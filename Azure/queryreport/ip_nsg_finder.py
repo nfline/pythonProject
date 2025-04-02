@@ -577,14 +577,7 @@ def generate_kql_query(target_ip: str,
         workspace_to_nsgs[workspace_id].append(nsg_id)
     
     for workspace_id, nsg_ids in workspace_to_nsgs.items():
-        nsg_filter = ""
         nsg_names_str = ""
-        if filter_by_nsg and nsg_ids:
-            nsg_names = [nsg_id.split('/')[-1] for nsg_id in nsg_ids]
-            if nsg_names:
-                nsg_names_str = ", ".join([f'"{name}"' for name in nsg_names])
-                # Assuming the NSG name field is 'NSGName_s' in AzureNetworkAnalytics_CL
-                nsg_filter = f'| where NSGName_s in~ ({nsg_names_str})\n'
         
         # KQL query targeting only AzureNetworkAnalytics_CL based on provided correct format
         query = f"""
@@ -593,12 +586,11 @@ AzureNetworkAnalytics_CL
 | where TimeGenerated between (datetime({start_time_str}) .. datetime({end_time_str}))
 | where FlowStatus_s == "A" // Assuming 'A' means Allowed/Accepted flow
 | where SrcIP_s == "{target_ip}" or DestIP_s == "{target_ip}"
-{nsg_filter}| project
+| project
     TimeGenerated,
     FlowDirection_s,
     SrcIP_s,
     DestIP_s,
-    SrcPort_d,
     DestPort_d,
     Protocol_s,
     FlowStatus_s,
