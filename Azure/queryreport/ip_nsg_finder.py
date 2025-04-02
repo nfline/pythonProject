@@ -5,7 +5,7 @@ import argparse
 import subprocess
 import ipaddress
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional, Tuple
 
 # Terminal output colors
@@ -338,7 +338,7 @@ def execute_kql_query(workspace_id: str, kql_query: str, timeout_seconds: int = 
     # 记录查询详情到日志文件，方便排查
     log_file = os.path.join("output", "kql_commands.log")
     with open(log_file, 'a') as f:
-        f.write(f"\n\n--- QUERY EXECUTION: {datetime.now()} ---\n")
+        f.write(f"\n\n--- QUERY EXECUTION: {datetime.now(timezone.utc)} ---\n")
         f.write(f"Workspace ID: {workspace_id}\n")
         f.write(f"Timespan: {timespan_param}\n")
         f.write(f"Query:\n{kql_query}\n")
@@ -545,8 +545,8 @@ search *
 def generate_simple_kql_query(target_ip: str, time_range_hours: int = 24) -> str:
     """Generate a simple KQL query without NSG filtering"""
     
-    # Get current time and time range
-    end_time = datetime.utcnow()
+    # 使用timezone-aware对象获取UTC时间
+    end_time = datetime.now(timezone.utc)
     start_time = end_time - timedelta(hours=time_range_hours)
     
     # Format times for KQL query - exactly as shown in screenshot
@@ -594,8 +594,8 @@ def generate_kql_query(target_ip: str,
     
     kql_queries = {}
     
-    # Get current time and time range
-    end_time = datetime.utcnow()
+    # 使用timezone-aware对象获取UTC时间
+    end_time = datetime.now(timezone.utc)
     start_time = end_time - timedelta(hours=time_range_hours)
     
     # Format times for KQL query - exactly as shown in screenshot
@@ -686,7 +686,7 @@ def analyze_traffic(target_ip: str, time_range_hours: int = 24, filter_by_nsg: b
     results = {
         "target_ip": target_ip,
         "time_range_hours": time_range_hours,
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "nsg_ids": [],
         "workspaces": {},
         "kql_results": {}
