@@ -148,6 +148,7 @@ class AzureIPTrafficAnalyzer:
             import subprocess
             import json
             import shutil
+            import os
             
             # First check if az command is available
             az_path = shutil.which("az")
@@ -164,9 +165,10 @@ class AzureIPTrafficAnalyzer:
             
             # Check if already logged in
             try:
-                # Run 'az account show' to check login status
+                # Run 'az account show' to check login status (using shell=True for Windows paths with spaces)
                 result = subprocess.run(
-                    ["az", "account", "show", "--query", "id", "-o", "tsv"],
+                    "az account show --query id -o tsv",
+                    shell=True,
                     capture_output=True,
                     text=True,
                     check=False
@@ -178,7 +180,8 @@ class AzureIPTrafficAnalyzer:
                     
                     # Get tenant ID
                     tenant_result = subprocess.run(
-                        ["az", "account", "show", "--query", "tenantId", "-o", "tsv"],
+                        "az account show --query tenantId -o tsv",
+                        shell=True,
                         capture_output=True,
                         text=True,
                         check=False
@@ -191,7 +194,8 @@ class AzureIPTrafficAnalyzer:
                     print("Not logged in. Attempting to login to Azure...")
                     # Run 'az login'
                     login_result = subprocess.run(
-                        ["az", "login"],
+                        "az login",
+                        shell=True,
                         capture_output=False,  # Let the login process show its own output for browser opening
                         text=True,
                         check=False
@@ -203,7 +207,8 @@ class AzureIPTrafficAnalyzer:
                     
                     # Get subscription ID
                     result = subprocess.run(
-                        ["az", "account", "show", "--query", "id", "-o", "tsv"],
+                        "az account show --query id -o tsv",
+                        shell=True,
                         capture_output=True,
                         text=True,
                         check=False
@@ -214,7 +219,8 @@ class AzureIPTrafficAnalyzer:
                         
                         # Get tenant ID
                         tenant_result = subprocess.run(
-                            ["az", "account", "show", "--query", "tenantId", "-o", "tsv"],
+                            "az account show --query tenantId -o tsv",
+                            shell=True,
                             capture_output=True,
                             text=True,
                             check=False
