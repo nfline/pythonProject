@@ -679,8 +679,8 @@ def generate_kql_query(target_ip: str,
 
     # Add projection and ordering
     query_parts.extend([
-        # Project relevant fields (adjust as needed)
-        "| project TimeGenerated, FlowStartTime_t, SrcIP_s, SrcPort_d, DestIP_s, DestPort_d, Protocol_s, FlowDirection_s, FlowStatus_s, NSGList_s, NSGRule_s, NetworkIntent_s, L7Protocol_s, DestPublicIPs_s, DestPrivateIPs_s, InboundBytes_d, OutboundBytes_d, InboundPackets_d, OutboundPackets_d, SubscriptionId, ResourceGroup, VMName_s, VMIP_s",
+        # Project relevant fields, removing SrcPort_d and aligning with user example + useful fields
+        "| project TimeGenerated, FlowStartTime_t, SrcIP_s, DestIP_s, DestPort_d, Protocol_s, FlowDirection_s, FlowStatus_s, NSGList_s, NSGRule_s, L7Protocol_s, InboundBytes_d, OutboundBytes_d",
         "| order by TimeGenerated desc"
         # "| take 10000" # Consider adding a limit if not batching or for testing
     ])
