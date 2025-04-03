@@ -309,12 +309,16 @@ def get_log_analytics_workspaces(flow_logs_config: Dict[str, Dict], target_ip: s
             workspace_id = config.get('workspaceId')
 
         if workspace_id:
-            # Validate workspace ID format (basic check)
-            if '/subscriptions/' in workspace_id and '/workspaces/' in workspace_id:
-                 workspace_ids[nsg_id] = workspace_id
-                 print_success(f"Log Analytics workspace ID for NSG '{nsg_name}': {workspace_id}")
+            # Validate workspace ID format - accept full Resource ID or just GUID
+            is_guid_format = len(workspace_id) == 36 and workspace_id.count('-') == 4
+            is_full_id_format = '/subscriptions/' in workspace_id and '/workspaces/' in workspace_id
+
+            if is_full_id_format or is_guid_format:
+                workspace_ids[nsg_id] = workspace_id # Store whatever format we received
+                print_success(f"Log Analytics workspace ID for NSG '{nsg_name}': {workspace_id}")
             else:
-                 print_warning(f"Invalid workspace ID format found for NSG '{nsg_name}': {workspace_id}")
+                # Log if it's neither expected format
+                print_warning(f"Unexpected workspace ID format found for NSG '{nsg_name}': {workspace_id}")
         else:
             # This case was already warned about in get_nsg_flow_logs_config
             print_info(f"No valid workspace ID found in the configuration for NSG '{nsg_name}'. Skipping KQL query for this NSG.")
