@@ -347,7 +347,6 @@ def execute_kql_query(workspace_id: str, kql_query: str, timeout_seconds: int = 
          with open(log_file, 'a') as f:
              f.write(f"\n\n--- QUERY EXECUTION: {datetime.now(timezone.utc)} ---\n")
              f.write(f"Workspace ID: {workspace_id}\n")
-             f.write(f"Timespan Param: {timespan_param}\n") # Log the parameter used
              f.write(f"Timeout Seconds: {timeout_seconds}\n")
              f.write(f"Query File: {temp_query_file}\n")
              f.write(f"Query Content:\n{kql_query}\n")
@@ -357,9 +356,9 @@ def execute_kql_query(workspace_id: str, kql_query: str, timeout_seconds: int = 
  
      # Construct Azure CLI command with proper parameters
      # Using @file syntax is generally robust against shell quoting issues
-     cmd = f"az monitor log-analytics query --workspace {workspace_id} --analytics-query \"@{temp_query_file}\" --timespan {timespan_param} -o json"
+     cmd = f"az monitor log-analytics query --workspace {workspace_id} --analytics-query \"@{temp_query_file}\" -o json"
  
-     print_info(f"Query command: az monitor log-analytics query --workspace {workspace_id} --analytics-query \"@{temp_query_file}\" --timespan {timespan_param} ...") # Avoid printing full command if too long
+     print_info(f"Query command: az monitor log-analytics query --workspace {workspace_id} --analytics-query \"@{temp_query_file}\" -o json ...") # Avoid printing full command if too long
      # Log complete command to log file
      try:
          with open(log_file, 'a') as f:
