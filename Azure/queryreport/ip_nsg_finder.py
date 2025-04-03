@@ -663,7 +663,7 @@ def generate_kql_query(target_ip: str,
     query_parts = [
         table_name,
         f"| where TimeGenerated between (datetime('{start_time_str}') .. datetime('{end_time_str}'))", # Use quotes for datetime strings
-        f'| where FlowType_s == "AzureNetworkAnalytics"', # Filter for Traffic Analytics processed logs
+        f'| where FlowStatus_s == "A"', # Filter for Allowed flows like the successful query screenshot
         f'| where SrcIP_s == "{target_ip}" or DestIP_s == "{target_ip}"'
     ]
 
@@ -677,11 +677,10 @@ def generate_kql_query(target_ip: str,
              print_warning(f"Could not extract NSG name from ID '{nsg_id}' for query filter.")
 
 
-    # Add projection and ordering
+    # Add projection and ordering (matching successful query screenshot exactly)
     query_parts.extend([
-        # Project relevant fields, removing SrcPort_d and aligning with user example + useful fields
-        "| project TimeGenerated, FlowStartTime_t, SrcIP_s, DestIP_s, DestPort_d, Protocol_s, FlowDirection_s, FlowStatus_s, NSGList_s, NSGRule_s, L7Protocol_s, InboundBytes_d, OutboundBytes_d",
-        "| order by TimeGenerated desc"
+        "| project TimeGenerated, FlowDirection_s, SrcIP_s, DestIP_s, DestPort_d, Protocol_s, FlowStatus_s, L7Protocol_s, InboundBytes_d, OutboundBytes_d",
+        "| order by TimeGenerated desc" # Use 'order by' instead of 'sort by' if needed, KQL usually accepts both but 'order by' is common
         # "| take 10000" # Consider adding a limit if not batching or for testing
     ])
 
