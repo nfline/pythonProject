@@ -736,11 +736,18 @@ def generate_kql_query(target_ip: str,
     return full_query.strip()
 
 
-def analyze_traffic(target_ip: str, time_range_hours: int = 24, filter_by_nsg: bool = True, execute_query: bool = False, timeout_seconds: int = 180, query_batch_hours: Optional[int] = None) -> Dict[str, Any]:
+def analyze_traffic(target_ip: str, time_range_hours: int = 24, filter_by_nsg: bool = True, execute_query: bool = False, timeout_seconds: int = 180, query_batch_hours: Optional[int] = None, logger: Optional[logging.Logger] = None) -> Dict[str, Any]: # Add logger parameter
     """
     Main analysis function: Finds NSGs, gets configs, generates and executes KQL queries.
     """
-    print_info(f"\n===== Starting Traffic Analysis for IP: {target_ip} =====")
+    # Use provided logger or setup a default one if not passed (though main should pass it)
+    if logger is None:
+        log_file_name = f"analyze_traffic_log_{target_ip.replace('.', '_')}_{datetime.now().strftime('%Y%m%d')}.log"
+        log_file_path = os.path.join("output", "logs", log_file_name)
+        logger = setup_logger(log_file_path)
+        logger.warning("Logger not passed to analyze_traffic, using default.")
+
+    logger.info(f"\n===== Starting Traffic Analysis for IP: {target_ip} =====")
     analysis_summary = {
         "target_ip": target_ip,
         "time_range_hours": time_range_hours,
@@ -755,27 +762,27 @@ def analyze_traffic(target_ip: str, time_range_hours: int = 24, filter_by_nsg: b
     }
 
     # Phase 1: Find NSGs related to the IP
-    print_info("\n===== Phase 1: Finding related NSGs =====")
+    logger.info("\n===== Phase 1: Finding related NSGs =====")
     nsg_ids = find_nsgs_by_ip(target_ip)
     analysis_summary["nsgs_found"] = nsg_ids
     if not nsg_ids:
-        print_warning("No NSGs found. Analysis cannot proceed further for KQL queries.")
+        logger.warning("No NSGs found. Analysis cannot proceed further for KQL queries.")
         return analysis_summary # Return early if no NSGs
 
     # Phase 2: Get Flow Log Configuration for found NSGs
-    print_info("\n===== Phase 2: Getting Flow Log Configurations =====")
+    logger.info("\n===== Phase 2: Getting Flow Log Configurations =====")
     flow_logs_config = get_nsg_flow_logs_config(nsg_ids, target_ip)
     analysis_summary["flow_logs_config"] = flow_logs_config
     if not flow_logs_config:
-        print_warning("No flow log configurations found for the NSGs. Cannot determine workspaces.")
+        logger.warning("No flow log configurations found for the NSGs. Cannot determine workspaces.")
         # We might still have NSG info, but can't query logs
         return analysis_summary
 
     # Phase 3: Identify Log Analytics Workspaces
-    print_info("\n===== Phase 3: Identifying Log Analytics Workspaces =====")
+    logger.info("\n===== Phase 3: Identifying Log Analytics Workspaces =====")
     workspace_map = get_log_analytics_workspaces(flow_logs_config, target_ip) # Map NSG ID -> Workspace ID
     if not workspace_map:
-        print_warning("No Log Analytics workspaces identified from flow log configs. Cannot execute KQL queries.")
+        logger.warning("No Log Analytics workspaces identified from flow log configs. Cannot execute KQL queries.")
         return analysis_summary
 
     # Group NSGs by Workspace ID for efficient querying
@@ -787,9 +794,9 @@ def analyze_traffic(target_ip: str, time_range_hours: int = 24, filter_by_nsg: b
     analysis_summary["workspaces_queried"] = workspaces_to_query
 
     # Phase 4: Generate and Execute KQL Queries (if requested)
-    print_info("\n===== Phase 4: Generating and Executing KQL Queries =====")
+    logger.info("\n===== Phase 4: Generating and Executing KQL Queries =====")
     if not execute_query:
-        print_warning("Query execution skipped as per '--no-execute' flag.")
+        logger.warning("Query execution skipped as per '--no-execute' flag.")
         # Generate sample queries for user reference
         for workspace_id, nsg_list in workspaces_to_query.items():
             # Generate query for the first NSG in the list for this workspace as an example
@@ -799,20 +806,23 @@ def analyze_traffic(target_ip: str, time_range_hours: int = 24, filter_by_nsg: b
                 time_range_hours=time_range_hours, # Use full range for sample
                 nsg_id=example_nsg_id if filter_by_nsg else None
             )
+            logger.info(f"\nSample KQL Query for Workspace {workspace_id.split('/')[-1]} (NSG: {example_nsg_id.split('/')[-1]}):")
             print_info(f"\nSample KQL Query for Workspace {workspace_id.split('/')[-1]} (NSG: {example_nsg_id.split('/')[-1]}):")
             print(kql_query)
             # Save sample query
             query_file = os.path.join("output", f"sample_query_{target_ip}_{example_nsg_id.split('/')[-1]}.kql")
             try:
                 with open(query_file, 'w', encoding='utf-8') as f: f.write(kql_query)
+                logger.info(f"Sample query saved to {query_file}")
                 print_info(f"Sample query saved to {query_file}")
             except IOError as e:
+                logger.warning(f"Could not save sample query: {e}")
                 print_warning(f"Could not save sample query: {e}")
 
         return analysis_summary
 
     # Execute queries
-    print_info("Executing KQL queries...")
+    logger.info("Executing KQL queries...")
     all_results_df = [] # List to hold DataFrames from successful queries
     query_execution_errors = 0 # Counter for failed queries
 
@@ -822,10 +832,10 @@ def analyze_traffic(target_ip: str, time_range_hours: int = 24, filter_by_nsg: b
 
     for workspace_id, nsg_list in workspaces_to_query.items():
         ws_short_id = workspace_id.split('/')[-1]
-        print_info(f"\n--- Querying Workspace: {ws_short_id} ---")
+        logger.info(f"\n--- Querying Workspace: {ws_short_id} ---")
         for nsg_id in nsg_list:
             nsg_name = nsg_id.split('/')[-1]
-            print_info(f"--- Processing NSG: {nsg_name} ---")
+            logger.info(f"--- Processing NSG: {nsg_name} ---")
             # Initialize result status for this NSG
             analysis_summary["query_results"][nsg_id] = {"status": "pending", "total_records": 0, "batches_failed": 0}
 
@@ -833,7 +843,7 @@ def analyze_traffic(target_ip: str, time_range_hours: int = 24, filter_by_nsg: b
             # Determine if batching is needed
             batch_intervals = []
             if query_batch_hours and query_batch_hours > 0 and time_range_hours > query_batch_hours:
-                print_info(f"Batching enabled: Querying in {query_batch_hours}-hour intervals.")
+                logger.info(f"Batching enabled: Querying in {query_batch_hours}-hour intervals.")
                 current_start_time = overall_start_time
                 while current_start_time < overall_end_time:
                     current_end_time = min(current_start_time + timedelta(hours=query_batch_hours), overall_end_time)
@@ -845,10 +855,10 @@ def analyze_traffic(target_ip: str, time_range_hours: int = 24, filter_by_nsg: b
                 # No batching, use the overall time range
                 batch_intervals.append((overall_start_time, overall_end_time))
                 if query_batch_hours:
-                     print_info(f"Batching interval ({query_batch_hours}h) >= total time range ({time_range_hours}h). Executing as single query.")
+                     logger.info(f"Batching interval ({query_batch_hours}h) >= total time range ({time_range_hours}h). Executing as single query.")
 
 
-            print_info(f"Total query intervals for NSG '{nsg_name}': {len(batch_intervals)}")
+            logger.info(f"Total query intervals for NSG '{nsg_name}': {len(batch_intervals)}")
 
             # Execute query for each interval (batch or single)
             nsg_total_records = 0
@@ -857,7 +867,7 @@ def analyze_traffic(target_ip: str, time_range_hours: int = 24, filter_by_nsg: b
                 interval_label = f"Interval {i+1}/{len(batch_intervals)}" if len(batch_intervals) > 1 else "Full Range"
                 start_str = start_dt.strftime('%Y-%m-%d %H:%M:%S UTC')
                 end_str = end_dt.strftime('%Y-%m-%d %H:%M:%S UTC')
-                print_info(f"Executing query for {interval_label}: {start_str} to {end_str}")
+                logger.info(f"Executing query for {interval_label}: {start_str} to {end_str}")
 
                 kql_query = generate_kql_query(
                     target_ip=target_ip,
@@ -874,7 +884,7 @@ def analyze_traffic(target_ip: str, time_range_hours: int = 24, filter_by_nsg: b
                     table = query_results['tables'][0]
                     record_count = len(table.get('rows', []))
                     nsg_total_records += record_count
-                    print_success(f"Batch {interval_label} for NSG '{nsg_name}' returned {record_count} records.")
+                    logger.info(f"Batch {interval_label} for NSG '{nsg_name}' returned {record_count} records.")
                     # Convert successful results to DataFrame for later merging
                     if record_count > 0:
                         try:
@@ -885,7 +895,7 @@ def analyze_traffic(target_ip: str, time_range_hours: int = 24, filter_by_nsg: b
                             df['query_batch_end'] = end_dt
                             all_results_df.append(df)
                         except Exception as e:
-                             print_error(f"Error converting results to DataFrame for NSG {nsg_name} ({interval_label}): {e}")
+                             logger.error(f"Error converting results to DataFrame for NSG {nsg_name} ({interval_label}): {e}")
                              analysis_summary["errors"].append(f"DataFrame conversion failed for NSG {nsg_name} ({interval_label}): {e}")
                              # Consider this batch as failed for status reporting
                              nsg_batches_failed += 1
@@ -893,14 +903,14 @@ def analyze_traffic(target_ip: str, time_range_hours: int = 24, filter_by_nsg: b
 
 
                 elif query_results is not None: # Query ran but returned no data or unexpected structure
-                     print_info(f"Batch {interval_label} for NSG '{nsg_name}' returned no data.")
+                     logger.info(f"Batch {interval_label} for NSG '{nsg_name}' returned no data.")
                      # Still considered a successful execution for this batch
                 else: # execute_kql_query returned None (error for this batch)
                      query_execution_errors += 1
                      nsg_batches_failed += 1
                      error_message = f"Query execution failed for NSG '{nsg_name}' ({interval_label}). See logs."
                      analysis_summary["errors"].append(f"KQL query failed for NSG {nsg_name} ({interval_label}) in workspace {ws_short_id}")
-                     print_error(error_message) # Also print error to console
+                     logger.error(error_message) # Log error
 
             # Update final status for this NSG based on batch results
             if nsg_batches_failed == len(batch_intervals): # All batches failed
@@ -916,14 +926,37 @@ def analyze_traffic(target_ip: str, time_range_hours: int = 24, filter_by_nsg: b
 
 
     # Phase 5: Consolidate and Save All Results to a Single Excel File
-    print_info("\n===== Phase 5: Consolidating Results =====")
+    logger.info("\n===== Phase 5: Consolidating Results =====")
     if all_results_df:
         try:
-            print_info(f"Consolidating results from {len(all_results_df)} successful batches/queries...")
+            logger.info(f"Consolidating results from {len(all_results_df)} successful batches/queries...")
             consolidated_df = pd.concat(all_results_df, ignore_index=True)
             # Optional: Drop duplicates if the same flow might be logged under multiple NSGs queried
             # consolidated_df.drop_duplicates(inplace=True)
-            print_success(f"Total consolidated records: {len(consolidated_df)}")
+            logger.info(f"Total consolidated records: {len(consolidated_df)}")
+
+            # --- Fix for Excel Column Order ---
+            desired_order = [
+                'TimeGenerated', 'FlowDirection_s', 'SrcIP_s', 'DestIP_s', 'DestPort_d',
+                'Protocol_s', 'FlowStatus_s', 'L7Protocol_s', 'InboundBytes_d', 'OutboundBytes_d'
+            ]
+            # Add batch columns if they exist in the DataFrame
+            if 'query_batch_start' in consolidated_df.columns:
+                desired_order.append('query_batch_start')
+            if 'query_batch_end' in consolidated_df.columns:
+                desired_order.append('query_batch_end')
+
+            # Get existing columns and create the final order, putting desired first
+            existing_columns = consolidated_df.columns.tolist()
+            # Start with columns in desired order that actually exist
+            final_columns = [col for col in desired_order if col in existing_columns]
+            # Add any other existing columns not in the desired list
+            final_columns.extend([col for col in existing_columns if col not in final_columns])
+
+            logger.info(f"Reordering columns for Excel export: {final_columns}")
+            # Apply the reordering directly to consolidated_df before copying
+            consolidated_df = consolidated_df[final_columns]
+
 
             # Save consolidated results
             consolidated_excel_path = os.path.join("output", f"consolidated_results_{target_ip.replace('.', '_')}_{datetime.now().strftime('%Y%m%d%H%M%S')}.xlsx")
@@ -933,7 +966,7 @@ def analyze_traffic(target_ip: str, time_range_hours: int = 24, filter_by_nsg: b
                  # --- Fix for Timezone Error ---
                  # Convert timezone-aware columns to timezone-naive UTC before writing to Excel
                  logger.info("Preparing DataFrame for Excel export (converting timezones)...")
-                 df_to_export = consolidated_df.copy() # Work on a copy
+                 df_to_export = consolidated_df.copy() # Now copy the reordered df
                  for col in df_to_export.columns:
                      # Check if column is datetime type and timezone-aware
                      if pd.api.types.is_datetime64_any_dtype(df_to_export[col]) and df_to_export[col].dt.tz is not None:
@@ -946,28 +979,30 @@ def analyze_traffic(target_ip: str, time_range_hours: int = 24, filter_by_nsg: b
                               # df_to_export[col] = df_to_export[col].astype(str)
 
                  logger.info("Writing consolidated data to Excel...")
-                 df_to_export.to_excel(consolidated_excel_path, index=False, engine='openpyxl')
+                 df_to_export.to_excel(consolidated_excel_path, index=False, engine='openpyxl') # Write the timezone-fixed df
                  print_success(f"Consolidated results saved to: {consolidated_excel_path}")
                  analysis_summary["consolidated_results_file"] = consolidated_excel_path
             except ImportError:
                  # Logger might not be available if setup failed earlier, use print_error
-                 print_error("Module 'openpyxl' not found. Cannot save consolidated Excel. Run: pip install openpyxl")
+                 logger.error("Module 'openpyxl' not found. Cannot save consolidated Excel. Run: pip install openpyxl")
+                 print_error("Module 'openpyxl' not found. Cannot save consolidated Excel.")
                  analysis_summary["errors"].append("Consolidated Excel saving failed: openpyxl not found.")
             except Exception as e:
                  # Logger might not be available if setup failed earlier, use print_error
+                 logger.error(f"Error saving consolidated Excel file: {e}")
                  print_error(f"Error saving consolidated Excel file: {e}")
                  analysis_summary["errors"].append(f"Consolidated Excel saving failed: {e}")
 
         except Exception as e:
-            print_error(f"Error consolidating DataFrames: {e}")
+            logger.error(f"Error consolidating DataFrames: {e}")
             analysis_summary["errors"].append(f"Result consolidation failed: {e}")
     elif execute_query and query_execution_errors == 0:
-         print_info("All queries executed successfully, but no records were found to consolidate.")
+         logger.info("All queries executed successfully, but no records were found to consolidate.")
     elif execute_query:
-         print_warning("No successful query results with data found to consolidate, possibly due to query errors.")
+         logger.warning("No successful query results with data found to consolidate, possibly due to query errors.")
 
 
-    print_info("\n===== Analysis Complete =====")
+    logger.info("\n===== Analysis Complete =====")
     # Save final summary
     save_json(analysis_summary, os.path.join("output", f"analysis_summary_{target_ip.replace('.', '_')}.json"))
 
@@ -1000,7 +1035,7 @@ def main():
     try:
         ipaddress.ip_address(args.ip_address)
     except ValueError:
-        logger.error(f"Invalid IP address format provided: {args.ip_address}")
+        logger.error(f"Invalid IP address format provided: {args.ip_address}") # Use logger
         print_error(f"Invalid IP address format: {args.ip_address}")
         sys.exit(1)
 
@@ -1013,23 +1048,24 @@ def main():
         logger.info("Azure CLI login verified.")
         print_success("Azure CLI login verified.")
     except subprocess.CalledProcessError:
-        logger.error("Azure CLI login required. Please run 'az login'.")
+        logger.error("Azure CLI login required. Please run 'az login'.") # Use logger
         print_error("Azure CLI login required. Please run 'az login' and try again.")
         sys.exit(1)
     except FileNotFoundError:
-         logger.error("Azure CLI ('az') command not found.")
+         logger.error("Azure CLI ('az') command not found.") # Use logger
          print_error("Azure CLI ('az') command not found. Please ensure it's installed and in your PATH.")
          sys.exit(1)
 
 
-    # Run the analysis
+    # Run the analysis, passing the logger instance
     analysis_results = analyze_traffic(
         target_ip=args.ip_address,
         time_range_hours=args.time_range,
         filter_by_nsg=args.filter_nsg,
         execute_query=args.execute,
         timeout_seconds=args.timeout,
-        query_batch_hours=args.batch_hours
+        query_batch_hours=args.batch_hours,
+        logger=logger # Pass logger to the function
     )
 
     # Print summary information from results
