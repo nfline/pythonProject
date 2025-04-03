@@ -495,13 +495,68 @@ def execute_kql_query(workspace_id: str, kql_query: str, target_ip: str, nsg_id:
 
         # Try parsing the JSON result
         try:
-            results = json.loads(stdout)
-            # Basic validation
-            if not isinstance(results, dict) or 'tables' not in results:
-                 logger.warning(f"Query for NSG '{nsg_name}' returned unexpected JSON structure. Raw output saved.")
+            # Clean the stdout string before parsing
+            cleaned_stdout = stdout.strip()
+            if cleaned_stdout.startswith('\ufeff'):
+                logger.info("Removing BOM from stdout before JSON parsing.")
+                cleaned_stdout = cleaned_stdout[1:]
+
+            parsed_json = json.loads(cleaned_stdout) # Parse the cleaned string
+
+            # --- Handle potential output format variations ---
+            results = None # Initialize results variable
+            if isinstance(parsed_json, dict) and 'tables' in parsed_json:
+                # Case 1: Standard format {"tables": [...]}
+                results = parsed_json
+                logger.info(f"Query for NSG '{nsg_name}' returned standard JSON object format.")
+            elif isinstance(parsed_json, list):
+                # Case 2: Observed format [...] (array of row objects)
+                logger.warning(f"Query for NSG '{nsg_name}' returned a JSON array directly. Attempting to wrap into standard format.")
+                columns = []
+                rows_as_lists = []
+                if len(parsed_json) > 0 and isinstance(parsed_json[0], dict):
+                    # Infer columns from the keys of the first row object
+                    columns = [{"name": k, "type": "string"} for k in parsed_json[0].keys()] # Assume string type for simplicity
+                    col_names = [c['name'] for c in columns]
+                    # Convert list of dictionaries to list of lists based on inferred column order
+                    for row_dict in parsed_json:
+                         rows_as_lists.append([row_dict.get(col_name) for col_name in col_names])
+                    logger.info(f"Inferred {len(columns)} columns from JSON array.")
+                else:
+                     logger.warning(f"JSON array for NSG '{nsg_name}' was empty or did not contain objects; cannot infer structure.")
+
+                # Reconstruct the standard dictionary format
+                results = {
+                    "tables": [
+                        {
+                            "name": "PrimaryResult", # Standard name used by Log Analytics
+                            "columns": columns,
+                            "rows": rows_as_lists
+                        }
+                    ]
+                }
+            else:
+                # Case 3: Neither format is recognized
+                 logger.warning(f"Query for NSG '{nsg_name}' returned JSON, but with unexpected structure. Type: {type(parsed_json)}. Raw output saved.")
                  print_warning(f"Query for NSG '{nsg_name}' returned unexpected JSON structure. Raw output saved.")
                  raw_output_path = os.path.join(output_dir, f"query_results_{target_ip}_{nsg_name}_{timestamp}_raw.txt")
                  try:
+                     with open(raw_output_path, 'w', encoding='utf-8') as rf: rf.write(stdout) # Save original stdout
+                     logger.info(f"Raw output saved to {raw_output_path}")
+                     print_info(f"Raw output saved to {raw_output_path}")
+                 except IOError as e:
+                     logger.warning(f"Could not save raw output: {e}")
+                     print_warning(f"Could not save raw output: {e}")
+                 return {"tables": []} # Return empty structure to avoid downstream errors
+
+            # --- Validation after potential reconstruction ---
+            # Now 'results' should always be a dict, check if 'tables' exists and is a list
+            if not isinstance(results.get('tables'), list):
+                 logger.warning(f"Query for NSG '{nsg_name}' returned JSON, but with unexpected structure. Type: {type(results)}. Keys: {results.keys() if isinstance(results, dict) else 'N/A'}. Raw output saved.")
+                 print_warning(f"Query for NSG '{nsg_name}' returned unexpected JSON structure (expected dict with 'tables' key). Raw output saved.")
+                 raw_output_path = os.path.join(output_dir, f"query_results_{target_ip}_{nsg_name}_{timestamp}_raw.txt")
+                 try:
+                     # Save the original (uncleaned) stdout to the raw file for inspection
                      with open(raw_output_path, 'w', encoding='utf-8') as rf: rf.write(stdout)
                      logger.info(f"Raw output saved to {raw_output_path}")
                      print_info(f"Raw output saved to {raw_output_path}")
@@ -572,7 +627,8 @@ def execute_kql_query(workspace_id: str, kql_query: str, target_ip: str, nsg_id:
 
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse query results as JSON for NSG '{nsg_name}': {e}")
-            logger.info(f"Raw output preview: {stdout[:500]}...")
+            # Log more context about the raw output that failed parsing
+            logger.info(f"Raw output that failed JSON parsing (first 500 chars): {stdout[:500]}...")
             print_error(f"Failed to parse query results as JSON for NSG '{nsg_name}': {e}")
             # Save raw output for debugging
             raw_output_path = os.path.join(output_dir, f"query_results_{target_ip}_{nsg_name}_{timestamp}_raw.txt")
