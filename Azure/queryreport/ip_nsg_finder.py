@@ -8,7 +8,7 @@ import re
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional, Tuple
-import pandas as pd # 添加 pandas 导入
+import pandas as pd # Add pandas import
 
 # Terminal output colors
 class Colors:
@@ -333,7 +333,7 @@ def get_log_analytics_workspaces(flow_logs_config: Dict[str, Dict], target_ip: s
     return workspace_ids
 
 def setup_logger(log_file_path: str):
-    """配置日志记录器"""
+    """Configure logger"""
     logger = logging.getLogger(log_file_path) # Use file path as logger name to avoid conflicts
     if logger.hasHandlers(): # Return existing logger if already configured
         # Ensure level is still appropriate if re-retrieved
@@ -377,14 +377,13 @@ def setup_logger(log_file_path: str):
 def execute_kql_query(workspace_id: str, kql_query: str, target_ip: str, nsg_id: str, timeout_seconds: int = 180) -> Optional[Dict]:
     """Execute a KQL query against a Log Analytics workspace, save results to Excel, and log execution."""
 
-    # --- 日志配置 ---
+    # --- Logging Setup ---
     output_dir = "output"
     log_dir = os.path.join(output_dir, "logs")
     # Log file name based on IP and Date
     log_file_name = f"query_log_{target_ip.replace('.', '_')}_{datetime.now().strftime('%Y%m%d')}.log"
     log_file_path = os.path.join(log_dir, log_file_name)
-    # Use NSG ID in logger name for uniqueness if multiple queries run in parallel/quick succession
-    # logger_name = f"{log_file_path}_{nsg_id.split('/')[-1]}" # Using file path is sufficient
+    # Using file path is sufficient for logger name uniqueness
     logger = setup_logger(log_file_path) # Setup ensures directory exists
 
     nsg_name = nsg_id.split('/')[-1] # For logging clarity
@@ -394,7 +393,7 @@ def execute_kql_query(workspace_id: str, kql_query: str, target_ip: str, nsg_id:
     logger.info(f"Workspace ID: {workspace_id}")
     logger.info(f"Timeout Seconds: {timeout_seconds}")
 
-    # --- KQL 查询准备 ---
+    # --- KQL Query Preparation ---
     kql_query = kql_query.strip()
     logger.debug(f"KQL Query:\n{kql_query}") # Log full query at debug level
 
@@ -552,25 +551,18 @@ def execute_kql_query(workspace_id: str, kql_query: str, target_ip: str, nsg_id:
             # --- Validation after potential reconstruction ---
             # Now 'results' should always be a dict, check if 'tables' exists and is a list
             if not isinstance(results.get('tables'), list):
-                 logger.warning(f"Query for NSG '{nsg_name}' returned JSON, but with unexpected structure. Type: {type(results)}. Keys: {results.keys() if isinstance(results, dict) else 'N/A'}. Raw output saved.")
-                 print_warning(f"Query for NSG '{nsg_name}' returned unexpected JSON structure (expected dict with 'tables' key). Raw output saved.")
-                 raw_output_path = os.path.join(output_dir, f"query_results_{target_ip}_{nsg_name}_{timestamp}_raw.txt")
-                 try:
-                     # Save the original (uncleaned) stdout to the raw file for inspection
-                     with open(raw_output_path, 'w', encoding='utf-8') as rf: rf.write(stdout)
-                     logger.info(f"Raw output saved to {raw_output_path}")
-                     print_info(f"Raw output saved to {raw_output_path}")
-                 except IOError as e:
-                     logger.warning(f"Could not save raw output: {e}")
-                     print_warning(f"Could not save raw output: {e}")
-                 return {"tables": []} # Return empty structure
+                 # This case should ideally not be reached if the above logic is correct
+                 logger.error(f"Internal error: Failed to reconstruct standard JSON structure for NSG '{nsg_name}'.")
+                 print_error(f"Internal error processing query results for NSG '{nsg_name}'.")
+                 return {"tables": []}
+
 
             # --- Save Results (JSON and Excel) ---
             base_filename = f"query_results_{target_ip.replace('.', '_')}_{nsg_name}_{timestamp}"
             result_file_dir = os.path.join(output_dir, "query_results") # Subdirectory for results
             os.makedirs(result_file_dir, exist_ok=True)
 
-            # Save original JSON results
+            # Save original JSON results (the potentially reconstructed one)
             json_result_path = os.path.join(result_file_dir, f"{base_filename}.json")
             save_json(results, json_result_path) # Use the existing save_json function
             logger.info(f"JSON results saved to {json_result_path}")
@@ -681,12 +673,12 @@ def generate_simple_kql_query(target_ip: str, time_range_hours: int = 24) -> str
     query = f"""
 {table_name}
 | where TimeGenerated between (datetime('{start_time_str}') .. datetime('{end_time_str}'))
-| where FlowType_s == "AzureNetworkAnalytics" // Ensure we are looking at flow logs
+| where FlowType_s == "AzureNetworkAnalytics" # Ensure we are looking at flow logs
 | where SrcIP_s == "{target_ip}" or DestIP_s == "{target_ip}"
-// Add more fields as needed
+# Add more fields as needed
 | project TimeGenerated, FlowStartTime_t, SrcIP_s, SrcPort_d, DestIP_s, DestPort_d, Protocol_s, FlowDirection_s, FlowStatus_s, NSGList_s, NSGRule_s, NetworkIntent_s, L7Protocol_s, DestPublicIPs_s, DestPrivateIPs_s, InboundBytes_d, OutboundBytes_d, InboundPackets_d, OutboundPackets_d
 | order by TimeGenerated desc
-// | take 100 // Optional: Limit results during testing
+# | take 100 # Optional: Limit results during testing
 """
     return query.strip()
 
@@ -715,12 +707,12 @@ def generate_kql_query(target_ip: str,
     start_time_str = start_time.strftime('%Y-%m-%dT%H:%M:%SZ')
     end_time_str = end_time.strftime('%Y-%m-%dT%H:%M:%SZ')
 
-    # Build the query parts
+    # Build the query parts (Reordered based on feedback)
     query_parts = [
         table_name,
-        f"| where TimeGenerated between (datetime('{start_time_str}') .. datetime('{end_time_str}'))", # Use quotes for datetime strings
-        f'| where FlowStatus_s == "A"', # Filter for Allowed flows like the successful query screenshot
-        f'| where SrcIP_s == "{target_ip}" or DestIP_s == "{target_ip}"'
+        f"| where TimeGenerated between (datetime('{start_time_str}') .. datetime('{end_time_str}'))", # 1. Time filter
+        f'| where FlowStatus_s == "A"', # 2. Status filter (like successful query)
+        f'| where SrcIP_s == "{target_ip}" or DestIP_s == "{target_ip}"' # 3. IP filter
     ]
 
     # Add NSG filter if provided
@@ -728,16 +720,15 @@ def generate_kql_query(target_ip: str,
         # NSGList_s usually contains the NSG name, not the full ID. Extract name.
         try:
             nsg_name = nsg_id.split('/')[-1]
-            query_parts.append(f'| where NSGList_s contains "{nsg_name}"') # Use 'contains' for flexibility
+            query_parts.append(f'| where NSGList_s contains "{nsg_name}"') # 4. NSG filter (Use 'contains' for flexibility)
         except Exception:
              print_warning(f"Could not extract NSG name from ID '{nsg_id}' for query filter.")
 
 
-    # Add projection and ordering (matching successful query screenshot exactly)
+    # Add projection and ordering (matching user requested order)
     query_parts.extend([
         "| project TimeGenerated, FlowDirection_s, SrcIP_s, DestIP_s, DestPort_d, Protocol_s, FlowStatus_s, L7Protocol_s, InboundBytes_d, OutboundBytes_d",
-        "| order by TimeGenerated desc" # Use 'order by' instead of 'sort by' if needed, KQL usually accepts both but 'order by' is common
-        # "| take 10000" # Consider adding a limit if not batching or for testing
+        "| order by TimeGenerated desc"
     ])
 
     # Join parts into a single query string
@@ -938,7 +929,24 @@ def analyze_traffic(target_ip: str, time_range_hours: int = 24, filter_by_nsg: b
             consolidated_excel_path = os.path.join("output", f"consolidated_results_{target_ip.replace('.', '_')}_{datetime.now().strftime('%Y%m%d%H%M%S')}.xlsx")
             try:
                  import openpyxl # Ensure engine is available
-                 consolidated_df.to_excel(consolidated_excel_path, index=False, engine='openpyxl')
+
+                 # --- Fix for Timezone Error ---
+                 # Convert timezone-aware columns to timezone-naive UTC before writing to Excel
+                 logger.info("Preparing DataFrame for Excel export (converting timezones)...")
+                 df_to_export = consolidated_df.copy() # Work on a copy
+                 for col in df_to_export.columns:
+                     # Check if column is datetime type and timezone-aware
+                     if pd.api.types.is_datetime64_any_dtype(df_to_export[col]) and df_to_export[col].dt.tz is not None:
+                         logger.info(f"Converting column '{col}' to timezone-naive UTC.")
+                         try:
+                             df_to_export[col] = df_to_export[col].dt.tz_convert('UTC').dt.tz_localize(None)
+                         except Exception as tz_err:
+                              logger.warning(f"Could not convert timezone for column '{col}': {tz_err}")
+                              # Optionally convert to string as fallback? Or leave as is and let Excel handle it potentially incorrectly.
+                              # df_to_export[col] = df_to_export[col].astype(str)
+
+                 logger.info("Writing consolidated data to Excel...")
+                 df_to_export.to_excel(consolidated_excel_path, index=False, engine='openpyxl')
                  print_success(f"Consolidated results saved to: {consolidated_excel_path}")
                  analysis_summary["consolidated_results_file"] = consolidated_excel_path
             except ImportError:
