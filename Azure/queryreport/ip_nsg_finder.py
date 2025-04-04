@@ -684,7 +684,7 @@ def generate_kql_query(target_ip: str,
 
     # Add projection and ordering (matching user requested order)
     query_parts.extend([
-        "| project TimeGenerated, FlowDirection_s, SrcIP_s, DestIP_s, DestPort_d, FlowStatus_s, L7Protocol_s, InboundBytes_d, OutboundBytes_d, NSGList_s",
+        "| project TimeGenerated, FlowDirection_s, SrcIP_s, DestIP_s, PublicIPs_s, DestPort_d, FlowStatus_s, L7Protocol_s, InboundBytes_d, OutboundBytes_d, NSGList_s", # Added PublicIPs_s
         "| order by TimeGenerated desc"
     ])
 
@@ -900,8 +900,8 @@ def analyze_traffic(target_ip: str, time_range_hours: int = 24, logger: Optional
             logger.info(f"Total consolidated records: {len(consolidated_df)}")
 
             # --- Fix for Excel Column Order ---
-            desired_order = [
-                'TimeGenerated', 'FlowDirection_s', 'SrcIP_s', 'DestIP_s', 'DestPort_d',
+            desired_order = [ # Added PublicIPs_s here
+                'TimeGenerated', 'FlowDirection_s', 'SrcIP_s', 'DestIP_s', 'PublicIPs_s', 'DestPort_d',
                 'FlowStatus_s', 'L7Protocol_s', 'InboundBytes_d', 'OutboundBytes_d','NSGList_s'
             ]
             # Add batch columns if they exist in the DataFrame
