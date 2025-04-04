@@ -33,22 +33,34 @@ logger = logging.getLogger(__name__)
 
 def run_command(cmd: str) -> Optional[Dict]:
     """Run command and return JSON result, with basic logging."""
-    logger.info(f"Executing command: {cmd[:150]}...") # Log truncated command
+    logger.info(f"Executing command: {cmd[:250]}...") # Log slightly more of the command
     try:
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, check=False, encoding='utf-8', timeout=DEFAULT_TIMEOUT + 60)
-
-        if result.returncode != 0:
-            logger.error(f"Command failed. Return Code: {result.returncode}")
-            logger.error(f"Stderr: {result.stderr.strip()}")
-            print(f"ERROR: Command execution failed. Check log: {log_file_path}", file=sys.stderr)
+        # Increased timeout slightly more for CLI overhead
+        process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8')
+        try:
+            stdout, stderr = process.communicate(timeout=DEFAULT_TIMEOUT + 90)
+            returncode = process.returncode
+        except subprocess.TimeoutExpired:
+            process.kill()
+            stdout, stderr = process.communicate()
+            logger.error(f"Command timed out after {DEFAULT_TIMEOUT + 90} seconds.")
+            logger.error(f"Stderr (partial on timeout): {stderr.strip()}")
+            print(f"ERROR: Command timed out. Check log: {log_file_path}", file=sys.stderr)
             return None
 
-        if not result.stdout.strip():
+        if returncode != 0:
+            logger.error(f"Command failed. Return Code: {returncode}")
+            # Log the full stderr on failure for better diagnostics
+            logger.error(f"Stderr: {stderr.strip()}")
+            print(f"ERROR: Command execution failed (Return Code: {returncode}). Check log for details: {log_file_path}", file=sys.stderr)
+            return None
+
+        if not stdout.strip():
             logger.warning("Command executed successfully but returned no output.")
-            return None # Treat no output as None for simplicity downstream
+            return None # Treat no output as None
 
         # Attempt to parse JSON, handle BOM if present
-        cleaned_stdout = result.stdout.strip()
+        cleaned_stdout = stdout.strip()
         if cleaned_stdout.startswith('\ufeff'):
             cleaned_stdout = cleaned_stdout[1:]
 
@@ -56,16 +68,14 @@ def run_command(cmd: str) -> Optional[Dict]:
             return json.loads(cleaned_stdout)
         except json.JSONDecodeError as e:
             logger.error(f"Failed to decode JSON response: {e}")
-            logger.debug(f"Non-JSON output received: {cleaned_stdout[:500]}...")
-            print(f"ERROR: Command output was not valid JSON. Check log: {log_file_path}", file=sys.stderr)
+            # Log the output that failed to parse
+            logger.error(f"Output that failed JSON parsing (first 1000 chars): {cleaned_stdout[:1000]}...")
+            print(f"ERROR: Command output was not valid JSON. Check log for details: {log_file_path}", file=sys.stderr)
             return None # Treat non-JSON as failure
 
-    except subprocess.TimeoutExpired:
-        logger.error(f"Command timed out after {DEFAULT_TIMEOUT + 60} seconds.")
-        print(f"ERROR: Command timed out. Check log: {log_file_path}", file=sys.stderr)
-        return None
+    # Removed TimeoutExpired handling here as it's handled within Popen/communicate block
     except Exception as e:
-        logger.exception(f"Error running command: {e}") # Log full exception traceback
+        logger.exception(f"Unexpected error running command: {e}") # Log full exception traceback
         print(f"ERROR: An unexpected error occurred running command. Check log: {log_file_path}", file=sys.stderr)
         return None
 
