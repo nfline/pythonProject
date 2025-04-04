@@ -14,7 +14,7 @@ import pandas as pd
 OUTPUT_DIR = "output"
 LOG_DIR = os.path.join(OUTPUT_DIR, "logs")
 RESULTS_DIR = os.path.join(OUTPUT_DIR, "query_results")
-DEFAULT_TIMEOUT = 300 # Increased default timeout slightly
+DEFAULT_TIMEOUT = 300 # Default timeout for CLI commands
 
 # --- Basic Logging Setup ---
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -33,28 +33,31 @@ logger = logging.getLogger(__name__)
 # --- Helper Functions ---
 
 def run_command(cmd: str) -> Optional[Dict]:
-    """Run command and return JSON result, with basic logging."""
+    """
+    Run command with retries and exponential backoff for rate limiting.
+    Returns JSON result or None on failure.
+    """
     max_retries = 3
-    base_delay = 15 # seconds - Significantly increased base delay
+    base_delay = 15 # seconds - Base delay for retries
 
     for attempt in range(max_retries):
         logger.info(f"Executing command (Attempt {attempt + 1}/{max_retries}): {cmd[:250]}...")
         try:
             process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8')
             try:
-                stdout, stderr = process.communicate(timeout=DEFAULT_TIMEOUT + 90) # Timeout per attempt
+                # Use a slightly longer timeout for communicate than the base timeout
+                stdout, stderr = process.communicate(timeout=DEFAULT_TIMEOUT + 90)
                 returncode = process.returncode
             except subprocess.TimeoutExpired:
                 process.kill()
                 stdout, stderr = process.communicate() # Get output even on timeout
                 logger.error(f"Command timed out on attempt {attempt + 1} after {DEFAULT_TIMEOUT + 90} seconds.")
                 logger.error(f"Stderr (partial on timeout): {stderr.strip()}")
-                # Consider retrying on timeout as well, or fail fast
                 if attempt + 1 == max_retries:
                     print(f"ERROR: Command timed out after {max_retries} attempts. Check log: {log_file_path}", file=sys.stderr)
                     return None
                 delay = base_delay * (2 ** attempt)
-                logger.info(f"Retrying after {delay} seconds due to timeout...")
+                logger.info(f"Retrying after {delay:.2f} seconds due to timeout...")
                 time.sleep(delay)
                 continue # Go to next retry iteration
 
@@ -67,7 +70,7 @@ def run_command(cmd: str) -> Optional[Dict]:
                     if attempt + 1 == max_retries:
                         logger.error(f"Command failed after {max_retries} attempts due to rate limiting.")
                         print(f"ERROR: Azure Rate Limiting persisted after {max_retries} retries. Try again later or reduce query frequency. Check log: {log_file_path}", file=sys.stderr)
-                        return None
+                        return None # Indicate failure due to rate limit
                     # Calculate exponential backoff delay
                     delay = base_delay * (2 ** attempt) + (attempt * 2) # Add some jitter
                     logger.info(f"Retrying after {delay:.2f} seconds due to rate limiting...")
@@ -83,10 +86,13 @@ def run_command(cmd: str) -> Optional[Dict]:
             # --- Process Successful Output ---
             if not stdout.strip():
                 logger.warning(f"Command executed successfully on attempt {attempt + 1} but returned no output.")
-                return None # Treat no output as None
+                # Treat no output as success but empty data, return empty dict perhaps?
+                # For simplicity, returning None might still be okay if downstream handles it.
+                # Let's return an empty dict to signify success with no data.
+                return {} # Success, but no data
 
             cleaned_stdout = stdout.strip()
-            if cleaned_stdout.startswith('\ufeff'):
+            if cleaned_stdout.startswith('\ufeff'): # Handle potential BOM
                 cleaned_stdout = cleaned_stdout[1:]
 
             try:
@@ -122,15 +128,18 @@ def ip_in_subnet(ip_address: str, subnet_prefix: str) -> bool:
 
 def find_related_nsgs_and_workspaces(target_ip: str) -> Dict[str, List[str]]:
     """
-    Finds NSGs related to the IP (via NICs and Subnets using consolidated Graph queries)
-    and maps them to their Log Analytics Workspace IDs.
+    Finds NSGs related to the IP (best effort due to rate limits) and maps them to Workspace IDs.
+    Prioritizes NIC-based findings. Attempts subnet scan but continues if it fails.
     Returns a dictionary mapping Workspace ID (short form) to a list of associated NSG IDs.
     """
-    logger.info(f"Starting consolidated search for NSGs and Workspaces related to IP: {target_ip}")
+    logger.info(f"Starting best-effort search for NSGs and Workspaces related to IP: {target_ip}")
     nsg_ids_found = set()
     workspace_map = {} # nsg_id -> workspace_id
     workspaces_to_query = {} # workspace_id_short -> [nsg_ids]
-    processed_subnet_ids = set() # Keep track of subnets processed to avoid duplicate checks
+    processed_subnet_ids = set()
+    nic_subnet_ids = set()
+    subnet_scan_failed = False
+    flow_log_query_failed = False
 
     # --- Query 1: Find NICs by IP and their associated Subnet/NSG ---
     logger.info("Step 1: Finding network interfaces via IP (Graph Query 1/3)...")
@@ -142,9 +151,12 @@ def find_related_nsgs_and_workspaces(target_ip: str) -> Dict[str, List[str]]:
     """
     nic_cmd = f"az graph query -q \"{nic_query}\" --query \"data\" -o json"
     nics_result = run_command(nic_cmd)
-    nic_subnet_ids = set() # Subnets associated with the found NICs
 
-    if nics_result is not None and isinstance(nics_result, list):
+    if nics_result is None:
+        logger.error("Failed to retrieve NIC information. Cannot proceed with NSG discovery.")
+        return {} # Critical failure if we can't even get NICs
+
+    if isinstance(nics_result, list) and len(nics_result) > 0:
         logger.info(f"Successfully retrieved NIC info. Found {len(nics_result)} NICs potentially associated with {target_ip}.")
         for nic in nics_result:
             nsg_id = nic.get('nsgId')
@@ -156,11 +168,15 @@ def find_related_nsgs_and_workspaces(target_ip: str) -> Dict[str, List[str]]:
                 nic_subnet_ids.add(subnet_id)
                 processed_subnet_ids.add(subnet_id) # Mark as processed
     else:
-        logger.warning(f"Could not retrieve NIC info for {target_ip}, or query failed/returned no results.")
+         logger.info(f"No NICs found directly associated with IP {target_ip}.")
+         # Continue, as IP might be in a subnet not directly tied to a found NIC
 
-    # --- Query 2: Find all Subnets, check IP containment and get NSGs ---
-    # This query also gets NSGs for subnets found via NICs in the previous step.
-    logger.info("Step 2: Checking all subnets for IP containment and associated NSGs (Graph Query 2/3)...")
+    # Add a LONG delay before the next Graph query
+    logger.info("Adding long delay before fetching all subnets to mitigate rate limiting...")
+    time.sleep(20) # Wait 20 seconds
+
+    # --- Query 2: Find all Subnets, check IP containment and get NSGs (Best Effort) ---
+    logger.info("Step 2: Attempting to check all subnets for IP containment and associated NSGs (Graph Query 2/3)...")
     subnet_query = """
     Resources
     | where type =~ 'microsoft.network/virtualnetworks/subnets'
@@ -169,20 +185,23 @@ def find_related_nsgs_and_workspaces(target_ip: str) -> Dict[str, List[str]]:
     subnets_cmd = f"az graph query -q \"{subnet_query}\" --query \"data\" -o json"
     all_subnets_result = run_command(subnets_cmd)
 
-    if all_subnets_result is not None and isinstance(all_subnets_result, list):
+    if all_subnets_result is None:
+        logger.warning("Failed to retrieve the list of all subnets (likely due to rate limiting). Proceeding with NSGs found via NICs only.")
+        subnet_scan_failed = True
+    elif isinstance(all_subnets_result, list):
         logger.info(f"Successfully retrieved all subnets ({len(all_subnets_result)}). Processing for IP containment and NSGs...")
         for subnet in all_subnets_result:
             subnet_id = subnet.get('id')
             nsg_id = subnet.get('nsgId')
 
-            # Check 1: Is this a subnet associated with a found NIC?
+            # Check 1: Is this a subnet associated with a found NIC? (Redundant check if already processed, but safe)
             if subnet_id in nic_subnet_ids:
                 if nsg_id:
                     logger.debug(f"Found NSG from NIC-associated subnet '{subnet.get('name')}': {nsg_id}")
                     nsg_ids_found.add(nsg_id)
-                processed_subnet_ids.add(subnet_id) # Ensure it's marked processed
+                processed_subnet_ids.add(subnet_id)
 
-            # Check 2: Does this subnet's range contain the target IP? (Only if not already processed via NIC)
+            # Check 2: Does this subnet's range contain the target IP? (Only if not already processed)
             if subnet_id not in processed_subnet_ids:
                 prefixes = []
                 if subnet.get('addressPrefix'):
@@ -196,22 +215,24 @@ def find_related_nsgs_and_workspaces(target_ip: str) -> Dict[str, List[str]]:
                         if nsg_id:
                             logger.debug(f"Found NSG from containing subnet '{subnet.get('name')}': {nsg_id}")
                             nsg_ids_found.add(nsg_id)
-                        processed_subnet_ids.add(subnet_id) # Mark as processed
-                        break # Stop checking prefixes for this subnet once a match is found
-    else:
-        logger.warning("Could not retrieve the list of all subnets, or query failed.")
+                        processed_subnet_ids.add(subnet_id)
+                        break # Stop checking prefixes for this subnet
+    # else: Empty dict returned by run_command signifies success with no data, which is fine.
 
+    # Add a LONG delay before the next Graph query
+    logger.info("Adding long delay before fetching flow log configs to mitigate rate limiting...")
+    time.sleep(20) # Wait 20 seconds
 
     # --- Check if any NSGs were found ---
     if not nsg_ids_found:
-        logger.warning(f"No relevant NSGs found for IP {target_ip} after checking NICs and Subnets.")
+        logger.warning(f"No relevant NSGs found for IP {target_ip} after checking NICs and potentially subnets.")
         return {}
 
-    logger.info(f"Total unique NSGs found potentially related to {target_ip}: {len(nsg_ids_found)} -> {list(nsg_ids_found)}")
+    logger.info(f"Total unique NSGs identified (best effort): {len(nsg_ids_found)} -> {list(nsg_ids_found)}")
 
-    # --- Query 3: Get Flow Log config and Workspace ID for all found NSGs ---
-    logger.info(f"Step 3: Getting Flow Log configurations for {len(nsg_ids_found)} NSGs (Graph Query 3/3)...")
-    nsg_ids_list_str = '","'.join(nsg_ids_found) # Prepare list for Kusto 'in' operator
+    # --- Query 3: Get Flow Log config and Workspace ID for all found NSGs (Best Effort) ---
+    logger.info(f"Step 3: Attempting to get Flow Log configurations for {len(nsg_ids_found)} NSGs (Graph Query 3/3)...")
+    nsg_ids_list_str = '","'.join(nsg_ids_found)
     flow_log_query = f"""
     Resources
     | where type =~ 'microsoft.network/networkwatchers/flowlogs'
@@ -219,53 +240,55 @@ def find_related_nsgs_and_workspaces(target_ip: str) -> Dict[str, List[str]]:
     | project targetResourceId = tostring(properties.targetResourceId), workspaceId=properties.flowAnalyticsConfiguration.networkWatcherFlowAnalyticsConfiguration.workspaceId, enabled=properties.enabled
     """
     flow_logs_cmd = f"az graph query -q \"{flow_log_query}\" --query \"data\" -o json"
-
     flow_logs_list = run_command(flow_logs_cmd)
 
-    if flow_logs_list is not None: # Check if command succeeded
-        if isinstance(flow_logs_list, list):
-            logger.info(f"Successfully retrieved {len(flow_logs_list)} flow log configurations for the found NSGs.")
-            for config in flow_logs_list: # <<< Start of the loop where 'continue' is valid
-                nsg_id = config.get('targetResourceId')
-                workspace_id = config.get('workspaceId') # <<< Corrected indentation
-                enabled = config.get('enabled', False) # <<< Corrected indentation
+    if flow_logs_list is None:
+        logger.error("Failed to retrieve Flow Log configurations (likely due to rate limiting). Cannot determine workspaces for KQL queries.")
+        flow_log_query_failed = True
+        # Return empty dict, but main function should check this flag or lack of workspaces
+        return {}
+    elif isinstance(flow_logs_list, list):
+        logger.info(f"Successfully retrieved {len(flow_logs_list)} flow log configurations.")
+        for config in flow_logs_list:
+            nsg_id = config.get('targetResourceId')
+            workspace_id = config.get('workspaceId')
+            enabled = config.get('enabled', False)
 
-                if not nsg_id or nsg_id not in nsg_ids_found:
-                    logger.warning(f"Flow log config found for unknown/unexpected NSG: {nsg_id}")
-                    continue # <<< Valid inside the loop
+            if not nsg_id or nsg_id not in nsg_ids_found:
+                logger.warning(f"Flow log config found for unknown/unexpected NSG: {nsg_id}")
+                continue
 
-                if not enabled:
-                    logger.warning(f"Flow logs are disabled for NSG: {nsg_id}")
-                    continue # <<< Valid inside the loop; Skip disabled flow logs
+            if not enabled:
+                logger.warning(f"Flow logs are disabled for NSG: {nsg_id}")
+                continue
 
-                if workspace_id:
-                    # Basic validation of workspace ID format (GUID or full resource ID)
-                    is_guid = len(workspace_id) == 36 and workspace_id.count('-') == 4
-                    is_full_id = '/subscriptions/' in workspace_id and '/workspaces/' in workspace_id
-                    if is_full_id or is_guid:
-                        workspace_map[nsg_id] = workspace_id
-                        logger.info(f"Found enabled Flow Log config for NSG {nsg_id} sending to Workspace: {workspace_id}")
-                    else:
-                        logger.warning(f"NSG {nsg_id} has Flow Log config, but workspace ID format is unexpected: {workspace_id}")
+            if workspace_id:
+                is_guid = len(workspace_id) == 36 and workspace_id.count('-') == 4
+                is_full_id = '/subscriptions/' in workspace_id and '/workspaces/' in workspace_id
+                if is_full_id or is_guid:
+                    workspace_map[nsg_id] = workspace_id
+                    logger.info(f"Found enabled Flow Log config for NSG {nsg_id} sending to Workspace: {workspace_id}")
                 else:
-                    logger.warning(f"NSG {nsg_id} has enabled Flow Log config, but Workspace ID is missing. Cannot query.")
-        # else: # Removed the 'else' part of the warning
-        #    logger.warning(f"Could not retrieve any flow log configurations for the found NSGs, or query failed.")
-
+                    logger.warning(f"NSG {nsg_id} has Flow Log config, but workspace ID format is unexpected: {workspace_id}")
+            else:
+                logger.warning(f"NSG {nsg_id} has enabled Flow Log config, but Workspace ID is missing. Cannot query.")
+    # else: Empty dict is success with no data
 
     if not workspace_map:
-        logger.warning("No valid Log Analytics Workspaces found associated with the NSGs' flow logs.")
+        logger.warning("No valid Log Analytics Workspaces found associated with the identified NSGs' flow logs.")
         return {}
 
     # Group NSGs by Workspace ID
     for nsg_id, ws_id in workspace_map.items():
-        # Use the short workspace ID (GUID) if it's a full resource ID
         ws_short_id = ws_id.split('/')[-1] if '/' in ws_id else ws_id
         if ws_short_id not in workspaces_to_query:
             workspaces_to_query[ws_short_id] = []
         workspaces_to_query[ws_short_id].append(nsg_id)
 
-    logger.info(f"Identified {len(workspaces_to_query)} unique workspaces to query.")
+    logger.info(f"Identified {len(workspaces_to_query)} unique workspaces to query based on available data.")
+    # Optionally add flags to the return dict?
+    # workspaces_to_query['_subnet_scan_failed'] = subnet_scan_failed
+    # workspaces_to_query['_flow_log_query_failed'] = flow_log_query_failed
     return workspaces_to_query
 
 
@@ -321,9 +344,8 @@ def execute_and_save_kql(workspace_id: str, kql_query: str, target_ip: str, time
     workspace_short_id = workspace_id.split('/')[-1] if '/' in workspace_id else workspace_id
 
     # Escape potential special characters in the query for the command line
-    # For complex queries, using a temp file might be safer, but trying direct first for simplicity
     # Basic escaping for quotes:
-    escaped_kql = kql_query.replace('"', '\\"')
+    escaped_kql = kql_query.replace('"', '\\"') # Simple escaping for quotes
 
     # Construct Azure CLI command (attempting direct query string)
     # Note: Complex queries might hit shell limits. Consider temp file approach if issues arise.
@@ -362,6 +384,10 @@ def execute_and_save_kql(workspace_id: str, kql_query: str, target_ip: str, time
                  logger.info(f"Query for Workspace {workspace_id} ({time_range_label}) returned an empty JSON array.")
                  return pd.DataFrame()
         else:
+            # Handle case where run_command returned {} for success with no data
+            if query_results_json == {}:
+                 logger.info(f"Query for Workspace {workspace_id} ({time_range_label}) returned 0 records (empty JSON object).")
+                 return pd.DataFrame()
             logger.warning(f"Query result for Workspace {workspace_id} ({time_range_label}) has unexpected structure: {type(query_results_json)}")
             return None # Unexpected structure
 
@@ -405,6 +431,9 @@ def save_to_excel(df: pd.DataFrame, base_filename: str) -> Optional[str]:
         existing_columns = df_to_export.columns.tolist()
         final_columns = [col for col in desired_order if col in existing_columns]
         final_columns.extend([col for col in existing_columns if col not in final_columns])
+        # Add WorkspaceID if it exists (added during collection)
+        if 'WorkspaceID' in existing_columns and 'WorkspaceID' not in final_columns:
+             final_columns.append('WorkspaceID')
         df_to_export = df_to_export[final_columns] # Reorder
 
         logger.info(f"Writing {len(df_to_export)} records to Excel: {excel_path}")
@@ -422,7 +451,6 @@ def main():
     parser = argparse.ArgumentParser(description="Simplified Azure NSG Flow Log Analyzer. Finds NSGs for an IP, queries logs, and outputs to Excel.")
     parser.add_argument("ip_address", help="The target IP address to analyze.")
     parser.add_argument("--time-range", type=int, default=24, help="Time range in hours for the KQL query (default: 24)")
-    # Removed --filter-nsg, --execute, --batch-hours, --timeout (using constant)
 
     args = parser.parse_args()
     target_ip = args.ip_address
@@ -463,72 +491,85 @@ def main():
         sys.exit(1)
 
 
-    # 3. Find related NSGs and group by Workspace
+    # 3. Find related NSGs and group by Workspace (Best Effort)
     workspaces_to_query = find_related_nsgs_and_workspaces(target_ip)
 
     if not workspaces_to_query:
-        logger.warning("No workspaces found to query based on NSG flow log configurations for the IP.")
-        print("INFO: No workspaces found to query. Exiting.")
-        sys.exit(0) # Not an error, just nothing to query
+        # Check logs for specific failure reason (rate limit vs. genuinely no data)
+        logger.warning("No workspaces identified to query. This could be due to rate limiting during discovery or no relevant NSGs/FlowLogs found.")
+        print("INFO: No workspaces found to query. Exiting. Check logs for details.")
+        sys.exit(0)
 
     # 4. Define time range for queries
     overall_end_time = datetime.now(timezone.utc)
     overall_start_time = overall_end_time - timedelta(hours=time_range_hours)
-    time_range_label = f"{time_range_hours}h" # Simple label for now
+    time_range_label = f"{time_range_hours}h"
 
     # 5. Execute KQL queries per workspace and collect results
     all_results_df_list = []
     query_errors = 0
+    kql_execution_attempted = False
     for workspace_id, nsg_ids_in_ws in workspaces_to_query.items():
+        # Skip internal flags if they were added
+        # if workspace_id.startswith('_'): continue
+
+        kql_execution_attempted = True
         logger.info(f"\nQuerying Workspace: {workspace_id} (for {len(nsg_ids_in_ws)} NSGs: {', '.join(nsg_ids_in_ws)})")
         kql_query = generate_kql_query(
             target_ip=target_ip,
             start_time_dt=overall_start_time,
             end_time_dt=overall_end_time,
-            nsg_ids_for_ws=nsg_ids_in_ws # Pass the list of NSGs for this workspace
+            nsg_ids_for_ws=nsg_ids_in_ws
         )
 
         df_result = execute_and_save_kql(workspace_id, kql_query, target_ip, time_range_label)
 
         if df_result is not None: # Includes empty DataFrame for success with 0 records
             if not df_result.empty:
-                 # Add workspace ID for context if merging results later
-                 df_result['WorkspaceID'] = workspace_id
+                 df_result['WorkspaceID'] = workspace_id # Add workspace context
                  all_results_df_list.append(df_result)
         else:
             query_errors += 1
-            logger.error(f"Query failed for workspace {workspace_id}.")
+            logger.error(f"KQL Query failed for workspace {workspace_id}.")
             # Continue to next workspace
 
     # 6. Consolidate results and save to single Excel file
-    if not all_results_df_list and query_errors == 0:
-         logger.info("All queries completed successfully, but no flow log records were found.")
-         print("INFO: Analysis completed, but no flow log records were found for the specified IP and time range.")
-    elif not all_results_df_list and query_errors > 0:
-         logger.error("Queries were executed with errors, and no data was retrieved.")
-         print(f"ERROR: Query execution failed for {query_errors} workspace(s). No data to save. Check log: {log_file_path}", file=sys.stderr)
-    elif all_results_df_list:
+    final_excel_path = None
+    if all_results_df_list:
         logger.info(f"Consolidating results from {len(all_results_df_list)} successful query executions...")
         try:
             consolidated_df = pd.concat(all_results_df_list, ignore_index=True)
             logger.info(f"Total consolidated records: {len(consolidated_df)}")
 
-            # Generate filename
             timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
             safe_ip = target_ip.replace('.', '_')
             excel_filename = f"flow_logs_{safe_ip}_{timestamp}"
 
-            # Save the consolidated DataFrame
-            saved_path = save_to_excel(consolidated_df, excel_filename)
-            if saved_path:
-                 logger.info(f"Successfully saved consolidated results to {saved_path}")
-            else:
+            final_excel_path = save_to_excel(consolidated_df, excel_filename)
+            if not final_excel_path:
                  logger.error("Failed to save the consolidated Excel file.")
-                 # Error message already printed by save_to_excel
 
         except Exception as e:
             logger.exception(f"Error consolidating or saving final Excel data: {e}")
             print(f"ERROR: Failed to consolidate or save final Excel file. Check log: {log_file_path}", file=sys.stderr)
+
+    # 7. Final Status Reporting
+    print("\n--- Execution Summary ---")
+    if final_excel_path:
+        print(f"SUCCESS: Analysis partially/fully completed. Results saved to: {final_excel_path}")
+        if query_errors > 0:
+             print(f"WARNING: KQL query failed for {query_errors} workspace(s). Results may be incomplete. Check logs.")
+    elif kql_execution_attempted and query_errors == 0:
+         print("INFO: KQL queries completed successfully, but no matching flow log records were found.")
+    elif kql_execution_attempted and query_errors > 0:
+         print(f"ERROR: KQL query execution failed for {query_errors} workspace(s). No Excel file generated. Check logs.")
+    elif not kql_execution_attempted:
+         # This case implies find_related_nsgs_and_workspaces returned empty before KQL stage
+         print("INFO: No workspaces were identified for querying, possibly due to rate limits during discovery or no relevant resources found. No KQL queries executed.")
+
+    # Check if discovery itself was potentially incomplete (though we proceed best-effort)
+    # We might need to check logs manually for the definitive reason find_... returned empty
+    # For now, the messages above cover the main outcomes.
 
     logger.info("--- Script execution finished ---")
 
