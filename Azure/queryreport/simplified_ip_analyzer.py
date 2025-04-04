@@ -148,7 +148,8 @@ def find_related_nsgs_and_workspaces(target_ip: str) -> Dict[str, List[str]]:
     | where properties.ipConfigurations contains '{target_ip}'
     | project id, name, nsgId = tostring(properties.networkSecurityGroup.id), subnetId = tostring(properties.ipConfigurations[0].properties.subnet.id)
     """
-    nic_cmd = f"az graph query -q \"{nic_query}\" --query \"data\" -o json"
+    # REMOVED --query "data" to get the full response object
+    nic_cmd = f"az graph query -q \"{nic_query}\" -o json"
     nics_result = run_command(nic_cmd)
 
     if nics_result is None:
@@ -157,20 +158,28 @@ def find_related_nsgs_and_workspaces(target_ip: str) -> Dict[str, List[str]]:
     logger.debug(f"NIC query result type: {type(nics_result)}")
     logger.debug(f"NIC query result content: {json.dumps(nics_result, indent=2)[:1000]}")
 
-    if isinstance(nics_result, list) and len(nics_result) > 0:
-        logger.info(f"Successfully retrieved NIC info. Found {len(nics_result)} NICs potentially associated with {target_ip}.")
-        for nic in nics_result:
-            nsg_id = nic.get('nsgId')
-            if nsg_id:
-                logger.debug(f"Found NSG directly from NIC '{nic.get('name')}': {nsg_id}")
-                nsg_ids_found.add(nsg_id)
-            subnet_id = nic.get('subnetId')
-            if subnet_id:
-                nic_subnet_ids.add(subnet_id)
-                processed_subnet_ids.add(subnet_id) # Mark as processed
+    # Check the full response structure
+    if isinstance(nics_result, dict) and 'data' in nics_result and isinstance(nics_result['data'], list):
+        nics_data = nics_result['data']
+        if len(nics_data) > 0:
+            logger.info(f"Successfully retrieved NIC info. Found {len(nics_data)} NICs potentially associated with {target_ip}.")
+            for nic in nics_data:
+                nsg_id = nic.get('nsgId')
+                if nsg_id:
+                    logger.debug(f"Found NSG directly from NIC '{nic.get('name')}': {nsg_id}")
+                    nsg_ids_found.add(nsg_id)
+                subnet_id = nic.get('subnetId')
+                if subnet_id:
+                    nic_subnet_ids.add(subnet_id)
+                    processed_subnet_ids.add(subnet_id) # Mark as processed
+        else:
+            # Query succeeded but returned no NICs
+            logger.info(f"No NICs found directly associated with IP {target_ip} in the query result data.")
     else:
-         logger.info(f"No NICs found directly associated with IP {target_ip}.")
-         # Continue, as IP might be in a subnet not directly tied to a found NIC
+        # Handle cases where run_command failed or returned unexpected format
+        logger.warning(f"NIC query did not return the expected format (dict with 'data' list) or failed. Result type: {type(nics_result)}")
+        logger.info(f"Assuming no NICs found directly associated with IP {target_ip} due to query issue or empty result.")
+        # Continue, as IP might be in a subnet not directly tied to a found NIC
 
     # Add a LONG delay before the next Graph query
     logger.info("Adding long delay before fetching all subnets to mitigate rate limiting...")
@@ -183,15 +192,18 @@ def find_related_nsgs_and_workspaces(target_ip: str) -> Dict[str, List[str]]:
     | where type =~ 'microsoft.network/virtualnetworks/subnets'
     | project id, name, addressPrefix = properties.addressPrefix, addressPrefixes = properties.addressPrefixes, nsgId = tostring(properties.networkSecurityGroup.id)
     """
-    subnets_cmd = f"az graph query -q \"{subnet_query}\" --query \"data\" -o json"
+    # REMOVED --query "data"
+    subnets_cmd = f"az graph query -q \"{subnet_query}\" -o json"
     all_subnets_result = run_command(subnets_cmd)
 
     if all_subnets_result is None:
         logger.warning("Failed to retrieve the list of all subnets (likely due to rate limiting). Proceeding with NSGs found via NICs only.")
         subnet_scan_failed = True
-    elif isinstance(all_subnets_result, list):
-        logger.info(f"Successfully retrieved all subnets ({len(all_subnets_result)}). Processing for IP containment and NSGs...")
-        for subnet in all_subnets_result:
+    # Check the full response structure
+    elif isinstance(all_subnets_result, dict) and 'data' in all_subnets_result and isinstance(all_subnets_result['data'], list):
+        subnets_data = all_subnets_result['data']
+        logger.info(f"Successfully retrieved all subnets ({len(subnets_data)}). Processing for IP containment and NSGs...")
+        for subnet in subnets_data:
             subnet_id = subnet.get('id')
             nsg_id = subnet.get('nsgId')
 
@@ -218,7 +230,10 @@ def find_related_nsgs_and_workspaces(target_ip: str) -> Dict[str, List[str]]:
                             nsg_ids_found.add(nsg_id)
                         processed_subnet_ids.add(subnet_id)
                         break # Stop checking prefixes for this subnet
-    # else: Empty dict returned by run_command signifies success with no data, which is fine.
+    else:
+        # Handle cases where run_command failed or returned unexpected format
+        logger.warning(f"Subnet query did not return the expected format (dict with 'data' list) or failed. Result type: {type(all_subnets_result)}")
+        subnet_scan_failed = True # Mark scan as failed if format is wrong
 
     # Add a LONG delay before the next Graph query
     logger.info("Adding long delay before fetching flow log configs to mitigate rate limiting...")
@@ -240,15 +255,17 @@ def find_related_nsgs_and_workspaces(target_ip: str) -> Dict[str, List[str]]:
     | where properties.targetResourceId in ('{nsg_ids_list_str}')
     | project targetResourceId = tostring(properties.targetResourceId), workspaceId=properties.flowAnalyticsConfiguration.networkWatcherFlowAnalyticsConfiguration.workspaceId, enabled=properties.enabled
     """
-    flow_logs_cmd = f"az graph query -q \"{flow_log_query}\" --query \"data\" -o json"
-    flow_logs_list = run_command(flow_logs_cmd)
+    # REMOVED --query "data"
+    flow_logs_cmd = f"az graph query -q \"{flow_log_query}\" -o json"
+    flow_logs_result = run_command(flow_logs_cmd) # Renamed variable
 
-    if flow_logs_list is None:
-        logger.error("Failed to retrieve Flow Log configurations (likely due to rate limiting). Cannot determine workspaces for KQL queries.")
+    # Check the full response structure
+    if flow_logs_result is None:
+        logger.error("Failed to retrieve Flow Log configurations (likely due to rate limiting or other error). Cannot determine workspaces for KQL queries.")
         flow_log_query_failed = True
-        # Return empty dict, but main function should check this flag or lack of workspaces
         return {}
-    elif isinstance(flow_logs_list, list):
+    elif isinstance(flow_logs_result, dict) and 'data' in flow_logs_result and isinstance(flow_logs_result['data'], list):
+        flow_logs_list = flow_logs_result['data'] # Extract the data list
         logger.info(f"Successfully retrieved {len(flow_logs_list)} flow log configurations.")
         for config in flow_logs_list:
             nsg_id = config.get('targetResourceId')
@@ -264,6 +281,7 @@ def find_related_nsgs_and_workspaces(target_ip: str) -> Dict[str, List[str]]:
                 continue
 
             if workspace_id:
+                # Basic validation (can be enhanced)
                 is_guid = len(workspace_id) == 36 and workspace_id.count('-') == 4
                 is_full_id = '/subscriptions/' in workspace_id and '/workspaces/' in workspace_id
                 if is_full_id or is_guid:
@@ -273,7 +291,10 @@ def find_related_nsgs_and_workspaces(target_ip: str) -> Dict[str, List[str]]:
                     logger.warning(f"NSG {nsg_id} has Flow Log config, but workspace ID format is unexpected: {workspace_id}")
             else:
                 logger.warning(f"NSG {nsg_id} has enabled Flow Log config, but Workspace ID is missing. Cannot query.")
-    # else: Empty dict is success with no data
+    else:
+        # Handle cases where run_command failed or returned unexpected format
+        logger.warning(f"Flow Log query did not return the expected format (dict with 'data' list) or failed. Result type: {type(flow_logs_result)}")
+        flow_log_query_failed = True
 
     if not workspace_map:
         logger.warning("No valid Log Analytics Workspaces found associated with the identified NSGs' flow logs.")
@@ -290,185 +311,6 @@ def find_related_nsgs_and_workspaces(target_ip: str) -> Dict[str, List[str]]:
     # Optionally add flags to the return dict?
     # workspaces_to_query['_subnet_scan_failed'] = subnet_scan_failed
     # workspaces_to_query['_flow_log_query_failed'] = flow_log_query_failed
-    def find_related_nsgs_and_workspaces(target_ip: str) -> Dict[str, List[str]]:
-        """
-        Finds NSGs related to the IP (best effort due to rate limits) and maps them to Workspace IDs.
-        Prioritizes NIC-based findings. Attempts subnet scan but continues if it fails.
-        Returns a dictionary mapping Workspace ID (short form) to a list of associated NSG IDs.
-        """
-        logger.info(f"Starting best-effort search for NSGs and Workspaces related to IP: {target_ip}")
-        nsg_ids_found = set()
-        workspace_map = {} # nsg_id -> workspace_id
-        workspaces_to_query = {} # workspace_id_short -> [nsg_ids]
-        processed_subnet_ids = set()
-        nic_subnet_ids = set()
-        subnet_scan_failed = False
-        flow_log_query_failed = False
-    
-        # --- Query 1: Find NICs by IP and their associated Subnet/NSG ---
-        logger.info("Step 1: Finding network interfaces via IP (Graph Query 1/3)...")
-        nic_query = f"""
-        Resources
-        | where type =~ 'microsoft.network/networkinterfaces'
-        | where properties.ipConfigurations contains '{target_ip}'
-        | project id, name, nsgId = tostring(properties.networkSecurityGroup.id), subnetId = tostring(properties.ipConfigurations[0].properties.subnet.id)
-        """
-        # IMPORTANT: Remove the --query "data" part which might be filtering out results
-        nic_cmd = f"az graph query -q \"{nic_query}\" -o json"
-        nics_result = run_command(nic_cmd)
-    
-        if nics_result is None:
-            logger.error("Failed to retrieve NIC information. Cannot proceed with NSG discovery.")
-            return {} # Critical failure if we can't even get NICs
-        
-        logger.debug(f"NIC query result type: {type(nics_result)}")
-        logger.debug(f"NIC query result content: {json.dumps(nics_result, indent=2)[:1000]}")
-    
-        # Check for the 'data' field in the result (standard Azure Graph API response format)
-        if isinstance(nics_result, dict) and 'data' in nics_result and isinstance(nics_result['data'], list):
-            nics_data = nics_result['data']
-            logger.info(f"Successfully retrieved NIC info. Found {len(nics_data)} NICs potentially associated with {target_ip}.")
-            
-            for nic in nics_data:
-                nsg_id = nic.get('nsgId')
-                if nsg_id:
-                    logger.debug(f"Found NSG directly from NIC '{nic.get('name')}': {nsg_id}")
-                    nsg_ids_found.add(nsg_id)
-                subnet_id = nic.get('subnetId')
-                if subnet_id:
-                    nic_subnet_ids.add(subnet_id)
-                    processed_subnet_ids.add(subnet_id) # Mark as processed
-        else:
-            logger.warning(f"Unexpected format for NIC query result. Expected dict with 'data' list, got: {type(nics_result)}")
-            logger.info(f"No NICs found directly associated with IP {target_ip} or result format unexpected.")
-            # Continue, as IP might be in a subnet not directly tied to a found NIC
-    
-        # Add a LONG delay before the next Graph query
-        logger.info("Adding long delay before fetching all subnets to mitigate rate limiting...")
-        time.sleep(20) # Wait 20 seconds
-    
-        # --- Query 2: Find all Subnets, check IP containment and get NSGs (Best Effort) ---
-        logger.info("Step 2: Attempting to check all subnets for IP containment and associated NSGs (Graph Query 2/3)...")
-        subnet_query = """
-        Resources
-        | where type =~ 'microsoft.network/virtualnetworks/subnets'
-        | project id, name, addressPrefix = properties.addressPrefix, addressPrefixes = properties.addressPrefixes, nsgId = tostring(properties.networkSecurityGroup.id)
-        """
-        # IMPORTANT: Remove the --query "data" part which might be filtering out results
-        subnets_cmd = f"az graph query -q \"{subnet_query}\" -o json"
-        all_subnets_result = run_command(subnets_cmd)
-    
-        if all_subnets_result is None:
-            logger.warning("Failed to retrieve the list of all subnets (likely due to rate limiting). Proceeding with NSGs found via NICs only.")
-            subnet_scan_failed = True
-        elif isinstance(all_subnets_result, dict) and 'data' in all_subnets_result and isinstance(all_subnets_result['data'], list):
-            subnets_data = all_subnets_result['data']
-            logger.info(f"Successfully retrieved all subnets ({len(subnets_data)}). Processing for IP containment and NSGs...")
-            
-            for subnet in subnets_data:
-                subnet_id = subnet.get('id')
-                nsg_id = subnet.get('nsgId')
-    
-                # Check 1: Is this a subnet associated with a found NIC? (Redundant check if already processed, but safe)
-                if subnet_id in nic_subnet_ids:
-                    if nsg_id:
-                        logger.debug(f"Found NSG from NIC-associated subnet '{subnet.get('name')}': {nsg_id}")
-                        nsg_ids_found.add(nsg_id)
-                    processed_subnet_ids.add(subnet_id)
-    
-                # Check 2: Does this subnet's range contain the target IP? (Only if not already processed)
-                if subnet_id not in processed_subnet_ids:
-                    prefixes = []
-                    if subnet.get('addressPrefix'):
-                        prefixes.append(subnet['addressPrefix'])
-                    if isinstance(subnet.get('addressPrefixes'), list):
-                        prefixes.extend(subnet['addressPrefixes'])
-    
-                    for prefix in set(prefixes):
-                        if prefix and ip_in_subnet(target_ip, prefix):
-                            logger.debug(f"IP {target_ip} is within subnet '{subnet.get('name')}' range {prefix}")
-                            if nsg_id:
-                                logger.debug(f"Found NSG from containing subnet '{subnet.get('name')}': {nsg_id}")
-                                nsg_ids_found.add(nsg_id)
-                            processed_subnet_ids.add(subnet_id)
-                            break # Stop checking prefixes for this subnet
-        else:
-            logger.warning(f"Unexpected format for subnet query result. Expected dict with 'data' list, got: {type(all_subnets_result)}")
-            subnet_scan_failed = True
-    
-        # Add a LONG delay before the next Graph query
-        logger.info("Adding long delay before fetching flow log configs to mitigate rate limiting...")
-        time.sleep(20) # Wait 20 seconds
-    
-        # --- Check if any NSGs were found ---
-        if not nsg_ids_found:
-            logger.warning(f"No relevant NSGs found for IP {target_ip} after checking NICs and potentially subnets.")
-            return {}
-    
-        logger.info(f"Total unique NSGs identified (best effort): {len(nsg_ids_found)} -> {list(nsg_ids_found)}")
-    
-        # --- Query 3: Get Flow Log config and Workspace ID for all found NSGs (Best Effort) ---
-        logger.info(f"Step 3: Attempting to get Flow Log configurations for {len(nsg_ids_found)} NSGs (Graph Query 3/3)...")
-        nsg_ids_list_str = '","'.join(nsg_ids_found)
-        flow_log_query = f"""
-        Resources
-        | where type =~ 'microsoft.network/networkwatchers/flowlogs'
-        | where properties.targetResourceId in ('{nsg_ids_list_str}')
-        | project targetResourceId = tostring(properties.targetResourceId), workspaceId=properties.flowAnalyticsConfiguration.networkWatcherFlowAnalyticsConfiguration.workspaceId, enabled=properties.enabled
-        """
-        # IMPORTANT: Remove the --query "data" part which might be filtering out results
-        flow_logs_cmd = f"az graph query -q \"{flow_log_query}\" -o json"
-        flow_logs_result = run_command(flow_logs_cmd)
-    
-        if flow_logs_result is None:
-            logger.error("Failed to retrieve Flow Log configurations (likely due to rate limiting). Cannot determine workspaces for KQL queries.")
-            flow_log_query_failed = True
-            # Return empty dict, but main function should check this flag or lack of workspaces
-            return {}
-        elif isinstance(flow_logs_result, dict) and 'data' in flow_logs_result and isinstance(flow_logs_result['data'], list):
-            flow_logs_list = flow_logs_result['data']
-            logger.info(f"Successfully retrieved {len(flow_logs_list)} flow log configurations.")
-            
-            for config in flow_logs_list:
-                nsg_id = config.get('targetResourceId')
-                workspace_id = config.get('workspaceId')
-                enabled = config.get('enabled', False)
-    
-                if not nsg_id or nsg_id not in nsg_ids_found:
-                    logger.warning(f"Flow log config found for unknown/unexpected NSG: {nsg_id}")
-                    continue
-    
-                if not enabled:
-                    logger.warning(f"Flow logs are disabled for NSG: {nsg_id}")
-                    continue
-    
-                if workspace_id:
-                    is_guid = len(workspace_id) == 36 and workspace_id.count('-') == 4
-                    is_full_id = '/subscriptions/' in workspace_id and '/workspaces/' in workspace_id
-                    if is_full_id or is_guid:
-                        workspace_map[nsg_id] = workspace_id
-                        logger.info(f"Found enabled Flow Log config for NSG {nsg_id} sending to Workspace: {workspace_id}")
-                    else:
-                        logger.warning(f"NSG {nsg_id} has Flow Log config, but workspace ID format is unexpected: {workspace_id}")
-                else:
-                    logger.warning(f"NSG {nsg_id} has enabled Flow Log config, but Workspace ID is missing. Cannot query.")
-        else:
-            logger.warning(f"Unexpected format for flow logs query result. Expected dict with 'data' list, got: {type(flow_logs_result)}")
-            flow_log_query_failed = True
-    
-        if not workspace_map:
-            logger.warning("No valid Log Analytics Workspaces found associated with the identified NSGs' flow logs.")
-            return {}
-    
-        # Group NSGs by Workspace ID
-        for nsg_id, ws_id in workspace_map.items():
-            ws_short_id = ws_id.split('/')[-1] if '/' in ws_id else ws_id
-            if ws_short_id not in workspaces_to_query:
-                workspaces_to_query[ws_short_id] = []
-            workspaces_to_query[ws_short_id].append(nsg_id)
-    
-        logger.info(f"Identified {len(workspaces_to_query)} unique workspaces to query based on available data.")
-        return workspaces_to_query
 
 
 def generate_kql_query(target_ip: str, start_time_dt: datetime, end_time_dt: datetime, nsg_ids_for_ws: Optional[List[str]] = None) -> str:
