@@ -9,7 +9,6 @@ import time  # Import time module for sleep
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional, Tuple
 import pandas as pd
-
 # --- Configuration ---
 OUTPUT_DIR = "output"
 LOG_DIR = os.path.join(OUTPUT_DIR, "logs")
@@ -155,6 +154,8 @@ def find_related_nsgs_and_workspaces(target_ip: str) -> Dict[str, List[str]]:
     if nics_result is None:
         logger.error("Failed to retrieve NIC information. Cannot proceed with NSG discovery.")
         return {} # Critical failure if we can't even get NICs
+    logger.debug(f"NIC query result type: {type(nics_result)}")
+    logger.debug(f"NIC query result content: {json.dumps(nics_result, indent=2)[:1000]}")
 
     if isinstance(nics_result, list) and len(nics_result) > 0:
         logger.info(f"Successfully retrieved NIC info. Found {len(nics_result)} NICs potentially associated with {target_ip}.")
