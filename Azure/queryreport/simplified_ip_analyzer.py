@@ -142,11 +142,13 @@ def find_related_nsgs_and_workspaces(target_ip: str) -> Dict[str, List[str]]:
 
     # --- Query 1: Find NICs by IP and their associated Subnet/NSG ---
     logger.info("Step 1: Finding network interfaces via IP (Graph Query 1/3)...")
+    # Refined query using mv-expand for precise IP matching
     nic_query = f"""
     Resources
     | where type =~ 'microsoft.network/networkinterfaces'
-    | where properties.ipConfigurations contains '{target_ip}'
-    | project id, name, nsgId = tostring(properties.networkSecurityGroup.id), subnetId = tostring(properties.ipConfigurations[0].properties.subnet.id)
+    | mv-expand ipConfig = properties.ipConfigurations // Expand the IP configurations array
+    | where ipConfig.properties.privateIPAddress == '{target_ip}' // Exact match on private IP address
+    | project id, name, nsgId = tostring(properties.networkSecurityGroup.id), subnetId = tostring(ipConfig.properties.subnet.id) // Project details, get subnet from expanded config
     """
     # REMOVED --query "data" to get the full response object
     nic_cmd = f"az graph query -q \"{nic_query}\" -o json"
