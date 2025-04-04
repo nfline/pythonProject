@@ -5,6 +5,7 @@ import argparse
 import subprocess
 import ipaddress
 import logging
+import time  # Import time module for sleep
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional, Tuple
 import pandas as pd
@@ -33,51 +34,81 @@ logger = logging.getLogger(__name__)
 
 def run_command(cmd: str) -> Optional[Dict]:
     """Run command and return JSON result, with basic logging."""
-    logger.info(f"Executing command: {cmd[:250]}...") # Log slightly more of the command
-    try:
-        # Increased timeout slightly more for CLI overhead
-        process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8')
+    max_retries = 3
+    base_delay = 15 # seconds - Significantly increased base delay
+
+    for attempt in range(max_retries):
+        logger.info(f"Executing command (Attempt {attempt + 1}/{max_retries}): {cmd[:250]}...")
         try:
-            stdout, stderr = process.communicate(timeout=DEFAULT_TIMEOUT + 90)
-            returncode = process.returncode
-        except subprocess.TimeoutExpired:
-            process.kill()
-            stdout, stderr = process.communicate()
-            logger.error(f"Command timed out after {DEFAULT_TIMEOUT + 90} seconds.")
-            logger.error(f"Stderr (partial on timeout): {stderr.strip()}")
-            print(f"ERROR: Command timed out. Check log: {log_file_path}", file=sys.stderr)
+            process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8')
+            try:
+                stdout, stderr = process.communicate(timeout=DEFAULT_TIMEOUT + 90) # Timeout per attempt
+                returncode = process.returncode
+            except subprocess.TimeoutExpired:
+                process.kill()
+                stdout, stderr = process.communicate() # Get output even on timeout
+                logger.error(f"Command timed out on attempt {attempt + 1} after {DEFAULT_TIMEOUT + 90} seconds.")
+                logger.error(f"Stderr (partial on timeout): {stderr.strip()}")
+                # Consider retrying on timeout as well, or fail fast
+                if attempt + 1 == max_retries:
+                    print(f"ERROR: Command timed out after {max_retries} attempts. Check log: {log_file_path}", file=sys.stderr)
+                    return None
+                delay = base_delay * (2 ** attempt)
+                logger.info(f"Retrying after {delay} seconds due to timeout...")
+                time.sleep(delay)
+                continue # Go to next retry iteration
+
+            # --- Check for Rate Limiting or other errors ---
+            if returncode != 0:
+                stderr_lower = stderr.lower()
+                # Check for specific throttling keywords
+                if "throttled" in stderr_lower or "ratelimiting" in stderr_lower or "429" in stderr_lower:
+                    logger.warning(f"Rate limiting detected on attempt {attempt + 1}. Stderr: {stderr.strip()}")
+                    if attempt + 1 == max_retries:
+                        logger.error(f"Command failed after {max_retries} attempts due to rate limiting.")
+                        print(f"ERROR: Azure Rate Limiting persisted after {max_retries} retries. Try again later or reduce query frequency. Check log: {log_file_path}", file=sys.stderr)
+                        return None
+                    # Calculate exponential backoff delay
+                    delay = base_delay * (2 ** attempt) + (attempt * 2) # Add some jitter
+                    logger.info(f"Retrying after {delay:.2f} seconds due to rate limiting...")
+                    time.sleep(delay)
+                    continue # Go to next retry iteration
+                else:
+                    # Other command execution error
+                    logger.error(f"Command failed on attempt {attempt + 1}. Return Code: {returncode}")
+                    logger.error(f"Stderr: {stderr.strip()}")
+                    print(f"ERROR: Command execution failed (Return Code: {returncode}). Check log for details: {log_file_path}", file=sys.stderr)
+                    return None # Fail fast on non-throttling errors
+
+            # --- Process Successful Output ---
+            if not stdout.strip():
+                logger.warning(f"Command executed successfully on attempt {attempt + 1} but returned no output.")
+                return None # Treat no output as None
+
+            cleaned_stdout = stdout.strip()
+            if cleaned_stdout.startswith('\ufeff'):
+                cleaned_stdout = cleaned_stdout[1:]
+
+            try:
+                parsed_json = json.loads(cleaned_stdout)
+                logger.info(f"Command executed successfully and JSON parsed on attempt {attempt + 1}.")
+                return parsed_json # Success!
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to decode JSON response on attempt {attempt + 1}: {e}")
+                logger.error(f"Output that failed JSON parsing (first 1000 chars): {cleaned_stdout[:1000]}...")
+                # Fail fast if JSON parsing fails, retrying likely won't help
+                print(f"ERROR: Command output was not valid JSON. Check log for details: {log_file_path}", file=sys.stderr)
+                return None
+
+        except Exception as e:
+            logger.exception(f"Unexpected error running command on attempt {attempt + 1}: {e}")
+            # Fail fast on unexpected errors during execution
+            print(f"ERROR: An unexpected error occurred running command. Check log: {log_file_path}", file=sys.stderr)
             return None
 
-        if returncode != 0:
-            logger.error(f"Command failed. Return Code: {returncode}")
-            # Log the full stderr on failure for better diagnostics
-            logger.error(f"Stderr: {stderr.strip()}")
-            print(f"ERROR: Command execution failed (Return Code: {returncode}). Check log for details: {log_file_path}", file=sys.stderr)
-            return None
-
-        if not stdout.strip():
-            logger.warning("Command executed successfully but returned no output.")
-            return None # Treat no output as None
-
-        # Attempt to parse JSON, handle BOM if present
-        cleaned_stdout = stdout.strip()
-        if cleaned_stdout.startswith('\ufeff'):
-            cleaned_stdout = cleaned_stdout[1:]
-
-        try:
-            return json.loads(cleaned_stdout)
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to decode JSON response: {e}")
-            # Log the output that failed to parse
-            logger.error(f"Output that failed JSON parsing (first 1000 chars): {cleaned_stdout[:1000]}...")
-            print(f"ERROR: Command output was not valid JSON. Check log for details: {log_file_path}", file=sys.stderr)
-            return None # Treat non-JSON as failure
-
-    # Removed TimeoutExpired handling here as it's handled within Popen/communicate block
-    except Exception as e:
-        logger.exception(f"Unexpected error running command: {e}") # Log full exception traceback
-        print(f"ERROR: An unexpected error occurred running command. Check log: {log_file_path}", file=sys.stderr)
-        return None
+    # Should not be reached if logic is correct, but as a safeguard
+    logger.error("Exited retry loop unexpectedly in run_command.")
+    return None
 
 def ip_in_subnet(ip_address: str, subnet_prefix: str) -> bool:
     """Check if IP is within subnet range using ipaddress module."""
@@ -91,117 +122,135 @@ def ip_in_subnet(ip_address: str, subnet_prefix: str) -> bool:
 
 def find_related_nsgs_and_workspaces(target_ip: str) -> Dict[str, List[str]]:
     """
-    Finds NSGs related to the IP (via NICs and Subnets) and maps them to their Log Analytics Workspace IDs.
-    Returns a dictionary mapping Workspace ID to a list of associated NSG IDs.
+    Finds NSGs related to the IP (via NICs and Subnets using consolidated Graph queries)
+    and maps them to their Log Analytics Workspace IDs.
+    Returns a dictionary mapping Workspace ID (short form) to a list of associated NSG IDs.
     """
-    logger.info(f"Starting search for NSGs and Workspaces related to IP: {target_ip}")
+    logger.info(f"Starting consolidated search for NSGs and Workspaces related to IP: {target_ip}")
     nsg_ids_found = set()
     workspace_map = {} # nsg_id -> workspace_id
-    workspaces_to_query = {} # workspace_id -> [nsg_ids]
+    workspaces_to_query = {} # workspace_id_short -> [nsg_ids]
+    processed_subnet_ids = set() # Keep track of subnets processed to avoid duplicate checks
 
-    # 1. Find NICs using the IP via Azure Resource Graph
-    logger.info("Step 1: Finding network interfaces via IP...")
-    nic_cmd = f"az graph query -q \"Resources | where type =~ 'microsoft.network/networkinterfaces' | where properties.ipConfigurations contains '{target_ip}' | project id, name, nsgId = tostring(properties.networkSecurityGroup.id), subnetId = tostring(properties.ipConfigurations[0].properties.subnet.id)\" --query \"data\" -o json"
-    nics = run_command(nic_cmd)
-    nic_subnet_ids = set()
+    # --- Query 1: Find NICs by IP and their associated Subnet/NSG ---
+    logger.info("Step 1: Finding network interfaces via IP (Graph Query 1/3)...")
+    nic_query = f"""
+    Resources
+    | where type =~ 'microsoft.network/networkinterfaces'
+    | where properties.ipConfigurations contains '{target_ip}'
+    | project id, name, nsgId = tostring(properties.networkSecurityGroup.id), subnetId = tostring(properties.ipConfigurations[0].properties.subnet.id)
+    """
+    nic_cmd = f"az graph query -q \"{nic_query}\" --query \"data\" -o json"
+    nics_result = run_command(nic_cmd)
+    nic_subnet_ids = set() # Subnets associated with the found NICs
 
-    if nics and isinstance(nics, list):
-        logger.info(f"Found {len(nics)} NICs potentially associated with {target_ip}.")
-        for nic in nics:
+    if nics_result is not None and isinstance(nics_result, list):
+        logger.info(f"Successfully retrieved NIC info. Found {len(nics_result)} NICs potentially associated with {target_ip}.")
+        for nic in nics_result:
             nsg_id = nic.get('nsgId')
             if nsg_id:
+                logger.debug(f"Found NSG directly from NIC '{nic.get('name')}': {nsg_id}")
                 nsg_ids_found.add(nsg_id)
-                logger.debug(f"Found NSG from NIC '{nic.get('name')}': {nsg_id}")
             subnet_id = nic.get('subnetId')
             if subnet_id:
                 nic_subnet_ids.add(subnet_id)
+                processed_subnet_ids.add(subnet_id) # Mark as processed
     else:
-        logger.warning(f"No NICs found directly associated with {target_ip} via Graph query, or query failed.")
+        logger.warning(f"Could not retrieve NIC info for {target_ip}, or query failed/returned no results.")
 
-    # 2. Find NSGs associated with the Subnets found via NICs
-    if nic_subnet_ids:
-        logger.info(f"Step 2: Checking {len(nic_subnet_ids)} subnets found via NICs...")
-        subnet_ids_str = '","'.join(nic_subnet_ids)
-        # Use Graph query to get NSGs for multiple subnets at once
-        subnet_nsg_cmd = f"az graph query -q \"Resources | where type =~ 'microsoft.network/virtualnetworks/subnets' and id in ('{subnet_ids_str}') | project id, name, nsgId = tostring(properties.networkSecurityGroup.id)\" --query \"data\" -o json"
-        subnet_details_list = run_command(subnet_nsg_cmd)
-        if subnet_details_list and isinstance(subnet_details_list, list):
-            for subnet_detail in subnet_details_list:
-                nsg_id = subnet_detail.get('nsgId')
+    # --- Query 2: Find all Subnets, check IP containment and get NSGs ---
+    # This query also gets NSGs for subnets found via NICs in the previous step.
+    logger.info("Step 2: Checking all subnets for IP containment and associated NSGs (Graph Query 2/3)...")
+    subnet_query = """
+    Resources
+    | where type =~ 'microsoft.network/virtualnetworks/subnets'
+    | project id, name, addressPrefix = properties.addressPrefix, addressPrefixes = properties.addressPrefixes, nsgId = tostring(properties.networkSecurityGroup.id)
+    """
+    subnets_cmd = f"az graph query -q \"{subnet_query}\" --query \"data\" -o json"
+    all_subnets_result = run_command(subnets_cmd)
+
+    if all_subnets_result is not None and isinstance(all_subnets_result, list):
+        logger.info(f"Successfully retrieved all subnets ({len(all_subnets_result)}). Processing for IP containment and NSGs...")
+        for subnet in all_subnets_result:
+            subnet_id = subnet.get('id')
+            nsg_id = subnet.get('nsgId')
+
+            # Check 1: Is this a subnet associated with a found NIC?
+            if subnet_id in nic_subnet_ids:
                 if nsg_id:
+                    logger.debug(f"Found NSG from NIC-associated subnet '{subnet.get('name')}': {nsg_id}")
                     nsg_ids_found.add(nsg_id)
-                    logger.debug(f"Found NSG from Subnet '{subnet_detail.get('name')}': {nsg_id}")
-        else:
-             logger.warning(f"Could not retrieve NSG details for subnets: {nic_subnet_ids}")
+                processed_subnet_ids.add(subnet_id) # Ensure it's marked processed
 
+            # Check 2: Does this subnet's range contain the target IP? (Only if not already processed via NIC)
+            if subnet_id not in processed_subnet_ids:
+                prefixes = []
+                if subnet.get('addressPrefix'):
+                    prefixes.append(subnet['addressPrefix'])
+                if isinstance(subnet.get('addressPrefixes'), list):
+                    prefixes.extend(subnet['addressPrefixes'])
 
-    # 3. Find Subnets containing the IP range and their NSGs (Comprehensive Check)
-    logger.info("Step 3: Searching all subnets for IP range containment...")
-    subnets_cmd = "az graph query -q \"Resources | where type =~ 'microsoft.network/virtualnetworks/subnets' | project id, name, addressPrefix = properties.addressPrefix, addressPrefixes = properties.addressPrefixes, nsgId = tostring(properties.networkSecurityGroup.id)\" --query \"data\" -o json"
-    all_subnets = run_command(subnets_cmd)
-
-    if all_subnets and isinstance(all_subnets, list):
-        logger.info(f"Checking {len(all_subnets)} total subnets for IP containment.")
-        for subnet in all_subnets:
-            prefixes = []
-            if subnet.get('addressPrefix'):
-                prefixes.append(subnet['addressPrefix'])
-            if isinstance(subnet.get('addressPrefixes'), list):
-                prefixes.extend(subnet['addressPrefixes'])
-
-            for prefix in set(prefixes):
-                if prefix and ip_in_subnet(target_ip, prefix):
-                    logger.debug(f"IP {target_ip} is within subnet '{subnet.get('name')}' range {prefix}")
-                    nsg_id = subnet.get('nsgId')
-                    if nsg_id:
-                        nsg_ids_found.add(nsg_id)
-                        logger.debug(f"Found NSG from containing subnet '{subnet.get('name')}': {nsg_id}")
-                    # Break inner loop once IP is found in one of the subnet's prefixes
-                    break
+                for prefix in set(prefixes):
+                    if prefix and ip_in_subnet(target_ip, prefix):
+                        logger.debug(f"IP {target_ip} is within subnet '{subnet.get('name')}' range {prefix}")
+                        if nsg_id:
+                            logger.debug(f"Found NSG from containing subnet '{subnet.get('name')}': {nsg_id}")
+                            nsg_ids_found.add(nsg_id)
+                        processed_subnet_ids.add(subnet_id) # Mark as processed
+                        break # Stop checking prefixes for this subnet once a match is found
     else:
-        logger.warning("Unable to get the list of all subnets via Graph query, or query failed.")
+        logger.warning("Could not retrieve the list of all subnets, or query failed.")
 
+
+    # --- Check if any NSGs were found ---
     if not nsg_ids_found:
-        logger.warning(f"No NSGs found related to IP {target_ip} after all checks.")
+        logger.warning(f"No relevant NSGs found for IP {target_ip} after checking NICs and Subnets.")
         return {}
 
-    logger.info(f"Found {len(nsg_ids_found)} unique NSG(s) potentially related to {target_ip}: {', '.join(nsg_ids_found)}")
+    logger.info(f"Total unique NSGs found potentially related to {target_ip}: {len(nsg_ids_found)} -> {list(nsg_ids_found)}")
 
-    # 4. Get Flow Log config and Workspace ID for each NSG
-    logger.info("Step 4: Getting Flow Log configurations and Workspace IDs...")
-    nsg_ids_list_str = '","'.join(nsg_ids_found)
-    # Graph query to get flow log details including workspace ID for multiple NSGs
-    flow_logs_cmd = f"az graph query -q \"Resources | where type =~ 'Microsoft.Network/networkWatchers/flowLogs' and properties.targetResourceId in ('{nsg_ids_list_str}') | project targetResourceId = tostring(properties.targetResourceId), workspaceId=properties.flowAnalyticsConfiguration.networkWatcherFlowAnalyticsConfiguration.workspaceId, enabled=properties.enabled\" --query \"data\" -o json"
+    # --- Query 3: Get Flow Log config and Workspace ID for all found NSGs ---
+    logger.info(f"Step 3: Getting Flow Log configurations for {len(nsg_ids_found)} NSGs (Graph Query 3/3)...")
+    nsg_ids_list_str = '","'.join(nsg_ids_found) # Prepare list for Kusto 'in' operator
+    flow_log_query = f"""
+    Resources
+    | where type =~ 'microsoft.network/networkwatchers/flowlogs'
+    | where properties.targetResourceId in ('{nsg_ids_list_str}')
+    | project targetResourceId = tostring(properties.targetResourceId), workspaceId=properties.flowAnalyticsConfiguration.networkWatcherFlowAnalyticsConfiguration.workspaceId, enabled=properties.enabled
+    """
+    flow_logs_cmd = f"az graph query -q \"{flow_log_query}\" --query \"data\" -o json"
 
     flow_logs_list = run_command(flow_logs_cmd)
 
-    if flow_logs_list and isinstance(flow_logs_list, list):
-        for config in flow_logs_list:
-            nsg_id = config.get('targetResourceId')
-            workspace_id = config.get('workspaceId')
-            enabled = config.get('enabled', False)
+    if flow_logs_list is not None: # Check if command succeeded
+        if isinstance(flow_logs_list, list):
+            logger.info(f"Successfully retrieved {len(flow_logs_list)} flow log configurations for the found NSGs.")
+            for config in flow_logs_list: # <<< Start of the loop where 'continue' is valid
+                nsg_id = config.get('targetResourceId')
+                workspace_id = config.get('workspaceId') # <<< Corrected indentation
+                enabled = config.get('enabled', False) # <<< Corrected indentation
 
-            if not nsg_id or nsg_id not in nsg_ids_found:
-                logger.warning(f"Flow log config found for unknown/unexpected NSG: {nsg_id}")
-                continue
+                if not nsg_id or nsg_id not in nsg_ids_found:
+                    logger.warning(f"Flow log config found for unknown/unexpected NSG: {nsg_id}")
+                    continue # <<< Valid inside the loop
 
-            if not enabled:
-                logger.warning(f"Flow logs are disabled for NSG: {nsg_id}")
-                continue # Skip disabled flow logs
+                if not enabled:
+                    logger.warning(f"Flow logs are disabled for NSG: {nsg_id}")
+                    continue # <<< Valid inside the loop; Skip disabled flow logs
 
-            if workspace_id:
-                 # Basic validation of workspace ID format (GUID or full resource ID)
-                is_guid = len(workspace_id) == 36 and workspace_id.count('-') == 4
-                is_full_id = '/subscriptions/' in workspace_id and '/workspaces/' in workspace_id
-                if is_full_id or is_guid:
-                    workspace_map[nsg_id] = workspace_id
-                    logger.info(f"Found enabled Flow Log config for NSG {nsg_id} sending to Workspace: {workspace_id}")
+                if workspace_id:
+                    # Basic validation of workspace ID format (GUID or full resource ID)
+                    is_guid = len(workspace_id) == 36 and workspace_id.count('-') == 4
+                    is_full_id = '/subscriptions/' in workspace_id and '/workspaces/' in workspace_id
+                    if is_full_id or is_guid:
+                        workspace_map[nsg_id] = workspace_id
+                        logger.info(f"Found enabled Flow Log config for NSG {nsg_id} sending to Workspace: {workspace_id}")
+                    else:
+                        logger.warning(f"NSG {nsg_id} has Flow Log config, but workspace ID format is unexpected: {workspace_id}")
                 else:
-                    logger.warning(f"NSG {nsg_id} has Flow Log config, but workspace ID format is unexpected: {workspace_id}")
-            else:
-                logger.warning(f"NSG {nsg_id} has enabled Flow Log config, but Workspace ID is missing. Cannot query.")
-    else:
-        logger.warning(f"Could not retrieve any flow log configurations for the found NSGs, or query failed.")
+                    logger.warning(f"NSG {nsg_id} has enabled Flow Log config, but Workspace ID is missing. Cannot query.")
+        # else: # Removed the 'else' part of the warning
+        #    logger.warning(f"Could not retrieve any flow log configurations for the found NSGs, or query failed.")
 
 
     if not workspace_map:
@@ -281,13 +330,14 @@ def execute_and_save_kql(workspace_id: str, kql_query: str, target_ip: str, time
     cmd = f'az monitor log-analytics query --workspace "{workspace_short_id}" --analytics-query "{escaped_kql}" -o json --timeout {DEFAULT_TIMEOUT}'
     logger.debug(f"Executing command: {cmd}")
 
-    query_results_json = run_command(cmd) # run_command handles basic execution errors/timeout/JSON parsing
+    query_results_json = run_command(cmd) # run_command now handles retries for throttling
 
     if query_results_json is None:
-        logger.error(f"KQL query execution failed or returned invalid data for Workspace {workspace_id} ({time_range_label}).")
+        logger.error(f"KQL query execution failed or returned invalid/no data after retries for Workspace {workspace_id} ({time_range_label}).")
         return None # Error already logged by run_command
 
     # Process results if query execution was successful
+    logger.info(f"Successfully executed KQL query for Workspace {workspace_id} ({time_range_label}). Processing results...")
     try:
         # Standard format is {"tables": [{"name": "PrimaryResult", "columns": [...], "rows": [...]}]}
         if isinstance(query_results_json.get('tables'), list) and len(query_results_json['tables']) > 0:
