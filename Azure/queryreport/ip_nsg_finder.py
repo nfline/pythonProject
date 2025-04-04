@@ -174,51 +174,8 @@ def find_nsgs_by_ip(target_ip: str) -> List[str]:
     else:
         print_warning(f"No network interfaces found directly associated with IP {target_ip} via Graph query.")
 
-    # 3. If no direct NIC found or to be comprehensive, find subnets containing this IP range
-    print_info("\nStep 3: Searching all subnets for IP range containment...")
-
-    # Query all subnets using Azure Resource Graph
-    subnets_cmd = "az graph query -q \"Resources | where type =~ 'microsoft.network/virtualnetworks/subnets' | project id, name, resourceGroup, vnetName = split(id, '/')[8], addressPrefix = properties.addressPrefix, addressPrefixes = properties.addressPrefixes, nsgId = tostring(properties.networkSecurityGroup.id)\" --query \"data\" -o json"
-
-    all_subnets = run_command(subnets_cmd)
-    if all_subnets and isinstance(all_subnets, list): # Ensure it's a list
-        save_json(all_subnets, os.path.join(output_dir, f"all_subnets_{target_ip}.json"))
-        print_success(f"Found {len(all_subnets)} subnets in total to check.")
-
-        # Check each subnet to see if it contains this IP
-        found_in_subnet = False
-        for subnet in all_subnets:
-            subnet_name = subnet.get('name', 'UnknownSubnet')
-            # Combine addressPrefix and addressPrefixes
-            prefixes = []
-            if subnet.get('addressPrefix'):
-                prefixes.append(subnet['addressPrefix'])
-            if isinstance(subnet.get('addressPrefixes'), list):
-                prefixes.extend(subnet['addressPrefixes'])
-
-            if not prefixes:
-                 # print_warning(f"Subnet {subnet_name} has no address prefix information.")
-                 continue # Skip subnets without prefix info
-
-            for prefix in set(prefixes): # Use set to avoid duplicate checks
-                if prefix and ip_in_subnet(target_ip, prefix):
-                    found_in_subnet = True
-                    print_success(f"IP {target_ip} is within subnet '{subnet_name}' range {prefix}")
-
-                    # Get NSG associated with the subnet
-                    nsg_id = subnet.get('nsgId')
-                    if nsg_id and nsg_id not in nsg_ids:
-                        nsg_ids.append(nsg_id)
-                        print_success(f"Found NSG from subnet '{subnet_name}': {nsg_id}")
-                    elif nsg_id:
-                        print_info(f"NSG from subnet '{subnet_name}' already recorded.")
-                    else:
-                        print_info(f"Subnet '{subnet_name}' containing the IP has no directly associated NSG.")
-                    # No need to get full subnet details again if already processed via NICs
-                    break # Stop checking prefixes for this subnet once a match is found
-    else:
-        print_warning("Unable to get the list of all subnets via Graph query.")
-
+    # Step 3 (Searching all subnets for IP range containment) has been removed for simplification
+    # as Step 1 and Step 2 usually cover the necessary NSG discovery.
     # Save all unique NSG IDs found
     unique_nsg_ids = list(set(nsg_ids)) # Ensure uniqueness
     if unique_nsg_ids:
@@ -736,10 +693,17 @@ def generate_kql_query(target_ip: str,
     return full_query.strip()
 
 
-def analyze_traffic(target_ip: str, time_range_hours: int = 24, filter_by_nsg: bool = True, execute_query: bool = False, timeout_seconds: int = 180, query_batch_hours: Optional[int] = None, logger: Optional[logging.Logger] = None) -> Dict[str, Any]: # Add logger parameter
+def analyze_traffic(target_ip: str, time_range_hours: int = 24, logger: Optional[logging.Logger] = None) -> Dict[str, Any]:
     """
     Main analysis function: Finds NSGs, gets configs, generates and executes KQL queries.
     """
+    # --- Fixed internal parameters (previously command-line args) ---
+    filter_by_nsg: bool = True       # Always filter KQL by specific NSG
+    execute_query: bool = True       # Always execute KQL queries
+    timeout_seconds: int = 180       # Default timeout for KQL execution
+    query_batch_hours: Optional[int] = None # Disable query batching by default
+    # --- End of Fixed internal parameters ---
+
     # Use provided logger or setup a default one if not passed (though main should pass it)
     if logger is None:
         log_file_name = f"analyze_traffic_log_{target_ip.replace('.', '_')}_{datetime.now().strftime('%Y%m%d')}.log"
@@ -1013,11 +977,8 @@ def main():
     parser = argparse.ArgumentParser(description="Find Azure NSGs associated with an IP and query NSG flow logs.")
     parser.add_argument("ip_address", help="The target IP address to analyze.")
     parser.add_argument("--time-range", type=int, default=24, help="Time range in hours for KQL query (default: 24)")
-    parser.add_argument("--filter-nsg", action=argparse.BooleanOptionalAction, default=True, help="Filter KQL query by specific NSG (default: True)")
-    parser.add_argument("--execute", action=argparse.BooleanOptionalAction, default=True, help="Execute KQL queries (default: True). Use --no-execute to only find NSGs/configs and generate sample queries.")
-    parser.add_argument("--timeout", type=int, default=180, help="Timeout in seconds for each KQL query execution via Azure CLI (default: 180)")
-    parser.add_argument("--batch-hours", type=int, default=None, help="Optional: Split query into batches of this many hours to avoid size limits (e.g., 1, 6, 24)")
-
+    # Removed arguments: --filter-nsg, --execute, --timeout, --batch-hours
+    # These are now handled internally within the analyze_traffic function.
     args = parser.parse_args()
 
     # --- Logger Setup for main function ---
@@ -1061,10 +1022,7 @@ def main():
     analysis_results = analyze_traffic(
         target_ip=args.ip_address,
         time_range_hours=args.time_range,
-        filter_by_nsg=args.filter_nsg,
-        execute_query=args.execute,
-        timeout_seconds=args.timeout,
-        query_batch_hours=args.batch_hours,
+        # Removed arguments: filter_by_nsg, execute_query, timeout_seconds, query_batch_hours
         logger=logger # Pass logger to the function
     )
 
