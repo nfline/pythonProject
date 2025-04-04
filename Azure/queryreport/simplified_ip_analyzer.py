@@ -124,12 +124,13 @@ def ip_in_subnet(ip_address: str, subnet_prefix: str) -> bool:
     except ValueError as e:
         logger.warning(f"Error parsing IP '{ip_address}' or subnet '{subnet_prefix}': {e}")
         return False
-    
-    # Modified to accept subscription_id
-    def find_related_nsgs_and_workspaces(target_ip: str, subscription_id: Optional[str] = None) -> Dict[str, List[str]]:
-        """
-        Finds NSGs related to the IP within a specific subscription (if provided) and maps them to Workspace IDs.
-        Prioritizes NIC-based findings. Attempts subnet scan but continues if it fails.
+
+# Modified to accept subscription_id
+# CORRECTED INDENTATION FOR THE ENTIRE FUNCTION
+def find_related_nsgs_and_workspaces(target_ip: str) -> Dict[str, List[str]]: # Removed subscription_id parameter
+    """
+    Finds NSGs related to the IP within a specific subscription (if provided) and maps them to Workspace IDs.
+    Prioritizes NIC-based findings. Attempts subnet scan but continues if it fails.
     Returns a dictionary mapping Workspace ID (short form) to a list of associated NSG IDs.
     """
     logger.info(f"Starting best-effort search for NSGs and Workspaces related to IP: {target_ip}")
@@ -140,21 +141,21 @@ def ip_in_subnet(ip_address: str, subnet_prefix: str) -> bool:
     nic_subnet_ids = set()
     subnet_scan_failed = False
     flow_log_query_failed = False
-    subscription_arg = f"--subscriptions \"{subscription_id}\"" if subscription_id else ""
+    # Removed subscription_arg logic
 
     # --- Query 1: Find NICs by IP and their associated Subnet/NSG ---
     logger.info("Step 1: Finding network interfaces via IP (Graph Query 1/3)...")
-    # Refined query using mv-expand for precise IP matching
+    # Reverting to 'contains' query like ip_nsg_finder.py
     nic_query = f"""
     Resources
     | where type =~ 'microsoft.network/networkinterfaces'
-    | mv-expand ipConfig = properties.ipConfigurations // Expand the IP configurations array
-    | where ipConfig.properties.privateIPAddress == '{target_ip}' // Exact match on private IP address
-    | project id, name, nsgId = tostring(properties.networkSecurityGroup.id), subnetId = tostring(ipConfig.properties.subnet.id) // Project details, get subnet from expanded config
+    | where properties.ipConfigurations contains '{target_ip}'
+    | project id, name, nsgId = tostring(properties.networkSecurityGroup.id), subnetId = tostring(properties.ipConfigurations[0].properties.subnet.id) // Assuming first config is relevant
     """
     # REMOVED --query "data" to get the full response object
     # ADDED subscription_arg
-    nic_cmd = f"az graph query -q \"{nic_query}\" {subscription_arg} -o json"
+    # Re-adding --query "data" like ip_nsg_finder.py
+    nic_cmd = f"az graph query -q \"{nic_query}\" --query \"data\" -o json" # Removed subscription_arg
     nics_result = run_command(nic_cmd)
 
     if nics_result is None:
@@ -163,28 +164,32 @@ def ip_in_subnet(ip_address: str, subnet_prefix: str) -> bool:
     logger.debug(f"NIC query result type: {type(nics_result)}")
     logger.debug(f"NIC query result content: {json.dumps(nics_result, indent=2)[:1000]}")
 
-    # Check the full response structure
-    if isinstance(nics_result, dict) and 'data' in nics_result and isinstance(nics_result['data'], list):
-        nics_data = nics_result['data']
-        if len(nics_data) > 0:
-            logger.info(f"Successfully retrieved NIC info. Found {len(nics_data)} NICs potentially associated with {target_ip}.")
-            for nic in nics_data:
+    # Process the result assuming it's a list (output of --query "data")
+    # This mimics ip_nsg_finder.py's handling
+    if nics_result is None:
+         logger.error("Failed to retrieve NIC information (run_command failed). Cannot proceed.")
+         return {}
+    elif isinstance(nics_result, list): # Expecting a list now due to --query "data"
+        if len(nics_result) > 0:
+            logger.info(f"Successfully retrieved NIC info. Found {len(nics_result)} NICs potentially associated with {target_ip} via 'contains' query.")
+            for nic in nics_result:
+                # Note: 'contains' might be inaccurate, but we are mimicking the original script
                 nsg_id = nic.get('nsgId')
                 if nsg_id:
                     logger.debug(f"Found NSG directly from NIC '{nic.get('name')}': {nsg_id}")
                     nsg_ids_found.add(nsg_id)
-                subnet_id = nic.get('subnetId')
+                subnet_id = nic.get('subnetId') # Using the projected subnetId
                 if subnet_id:
                     nic_subnet_ids.add(subnet_id)
                     processed_subnet_ids.add(subnet_id) # Mark as processed
         else:
-            # Query succeeded but returned no NICs
-            logger.info(f"No NICs found directly associated with IP {target_ip} in the query result data.")
+             # Query succeeded but --query "data" returned an empty list
+             logger.info(f"No NICs found directly associated with IP {target_ip} via 'contains' query.")
     else:
-        # Handle cases where run_command failed or returned unexpected format
-        logger.warning(f"NIC query did not return the expected format (dict with 'data' list) or failed. Result type: {type(nics_result)}")
-        logger.info(f"Assuming no NICs found directly associated with IP {target_ip} due to query issue or empty result.")
-        # Continue, as IP might be in a subnet not directly tied to a found NIC
+         # Handle unexpected format from run_command or --query "data"
+         logger.warning(f"NIC query with --query \"data\" did not return a list as expected. Got: {type(nics_result)}")
+         logger.info(f"Assuming no NICs found directly associated with IP {target_ip}.")
+         # Continue, as IP might be in a subnet not directly tied to a found NIC
 
     # Add a LONG delay before the next Graph query
     logger.info("Adding long delay before fetching all subnets to mitigate rate limiting...")
@@ -199,7 +204,7 @@ def ip_in_subnet(ip_address: str, subnet_prefix: str) -> bool:
     """
     # REMOVED --query "data"
     # ADDED subscription_arg
-    subnets_cmd = f"az graph query -q \"{subnet_query}\" {subscription_arg} -o json"
+    subnets_cmd = f"az graph query -q \"{subnet_query}\" -o json" # Removed subscription_arg
     all_subnets_result = run_command(subnets_cmd)
 
     if all_subnets_result is None:
@@ -263,7 +268,7 @@ def ip_in_subnet(ip_address: str, subnet_prefix: str) -> bool:
     """
     # REMOVED --query "data"
     # ADDED subscription_arg
-    flow_logs_cmd = f"az graph query -q \"{flow_log_query}\" {subscription_arg} -o json"
+    flow_logs_cmd = f"az graph query -q \"{flow_log_query}\" -o json" # Removed subscription_arg
     flow_logs_result = run_command(flow_logs_cmd) # Renamed variable
 
     # Check the full response structure
@@ -318,6 +323,7 @@ def ip_in_subnet(ip_address: str, subnet_prefix: str) -> bool:
     # Optionally add flags to the return dict?
     # workspaces_to_query['_subnet_scan_failed'] = subnet_scan_failed
     # workspaces_to_query['_flow_log_query_failed'] = flow_log_query_failed
+    return workspaces_to_query
 
 
 def generate_kql_query(target_ip: str, start_time_dt: datetime, end_time_dt: datetime, nsg_ids_for_ws: Optional[List[str]] = None) -> str:
@@ -476,11 +482,10 @@ def save_to_excel(df: pd.DataFrame, base_filename: str) -> Optional[str]:
 # --- Main Execution Logic ---
 
 def main():
-    parser = argparse.ArgumentParser(description="Simplified Azure NSG Flow Log Analyzer. Finds NSGs for an IP within a specific subscription, queries logs, and outputs to Excel.")
+    parser = argparse.ArgumentParser(description="Simplified Azure NSG Flow Log Analyzer. Finds NSGs for an IP, queries logs, and outputs to Excel.")
     parser.add_argument("ip_address", help="The target IP address to analyze.")
-    parser.add_argument("--subscription-id", required=True, help="The Azure Subscription ID to query within.") # Added and made required
+    # Removed subscription-id argument
     parser.add_argument("--time-range", type=int, default=24, help="Time range in hours for the KQL query (default: 24)")
-    # Removed timeout and batch-hours args as they are not used in this simplified version's main logic directly
 
     args = parser.parse_args()
     target_ip = args.ip_address
@@ -501,116 +506,55 @@ def main():
     # 2. Check Azure CLI login
     try:
         logger.info("Checking Azure CLI login status...")
-        subprocess.run("az account show", shell=True, check=True, capture_output=True, text=True, encoding='utf-8', timeout=30)
+        # Use a simple command that requires login
+        subprocess.check_output("az account show", shell=True, stderr=subprocess.PIPE)
         logger.info("Azure CLI login verified.")
-    except subprocess.TimeoutExpired:
-         logger.error("Azure CLI login check timed out. Please ensure 'az account show' runs quickly.")
-         print("ERROR: Azure CLI login check timed out.", file=sys.stderr)
-         sys.exit(1)
     except subprocess.CalledProcessError:
-        logger.error("Azure CLI login required. Please run 'az login'.")
-        print("ERROR: Azure CLI login required. Please run 'az login' and try again.", file=sys.stderr)
-        sys.exit(1)
-    except FileNotFoundError:
-         logger.error("Azure CLI ('az') command not found.")
-         print("ERROR: Azure CLI ('az') command not found. Please ensure it's installed and in your PATH.", file=sys.stderr)
-         sys.exit(1)
-    except Exception as e:
-        logger.exception(f"An unexpected error occurred during Azure CLI check: {e}")
-        print(f"ERROR: An unexpected error occurred during Azure CLI check. Check log: {log_file_path}", file=sys.stderr)
+        logger.error("Azure CLI not logged in. Please run 'az login'.")
+        print("ERROR: Azure CLI not logged in. Please run 'az login' first.", file=sys.stderr)
         sys.exit(1)
 
-
-    # 3. Find related NSGs and group by Workspace (Best Effort)
-    workspaces_to_query = find_related_nsgs_and_workspaces(target_ip, args.subscription_id) # Pass subscription_id
+    # 3. Find related NSGs and Workspaces (pass subscription ID)
+    logger.info("Finding related NSGs and Log Analytics Workspaces...")
+    workspaces_to_query = find_related_nsgs_and_workspaces(target_ip) # Removed subscription_id argument
 
     if not workspaces_to_query:
-        # Check logs for specific failure reason (rate limit vs. genuinely no data)
-        logger.warning("No workspaces identified to query. This could be due to rate limiting during discovery or no relevant NSGs/FlowLogs found.")
-        print("INFO: No workspaces found to query. Exiting. Check logs for details.")
-        sys.exit(0)
+        logger.warning(f"No enabled flow logs sending to Log Analytics found for NSGs related to IP {target_ip}. Exiting.")
+        print(f"WARNING: No enabled flow logs sending to Log Analytics found for NSGs related to IP {target_ip}. Cannot query logs.", file=sys.stderr)
+        sys.exit(0) # Exit gracefully, not an error
 
-    # 4. Define time range for queries
-    overall_end_time = datetime.now(timezone.utc)
-    overall_start_time = overall_end_time - timedelta(hours=time_range_hours)
+    # 4. Define time range for KQL query
+    end_time = datetime.now(timezone.utc)
+    start_time = end_time - timedelta(hours=time_range_hours)
     time_range_label = f"{time_range_hours}h"
 
-    # 5. Execute KQL queries per workspace and collect results
-    all_results_df_list = []
-    query_errors = 0
-    kql_execution_attempted = False
-    for workspace_id, nsg_ids_in_ws in workspaces_to_query.items():
-        # Skip internal flags if they were added
-        # if workspace_id.startswith('_'): continue
+    # 5. Execute KQL queries and collect results
+    all_results_df = pd.DataFrame()
+    logger.info(f"Querying {len(workspaces_to_query)} Log Analytics workspace(s)...")
 
-        kql_execution_attempted = True
-        logger.info(f"\nQuerying Workspace: {workspace_id} (for {len(nsg_ids_in_ws)} NSGs: {', '.join(nsg_ids_in_ws)})")
-        kql_query = generate_kql_query(
-            target_ip=target_ip,
-            start_time_dt=overall_start_time,
-            end_time_dt=overall_end_time,
-            nsg_ids_for_ws=nsg_ids_in_ws
-        )
+    for ws_id, nsg_ids in workspaces_to_query.items():
+        logger.info(f"Processing Workspace: {ws_id} (NSGs: {len(nsg_ids)})")
+        kql_query = generate_kql_query(target_ip, start_time, end_time, nsg_ids)
+        df_results = execute_and_save_kql(ws_id, kql_query, target_ip, time_range_label)
 
-        df_result = execute_and_save_kql(workspace_id, kql_query, target_ip, time_range_label)
+        if df_results is not None and not df_results.empty:
+            df_results['WorkspaceID'] = ws_id # Add workspace ID for context
+            all_results_df = pd.concat([all_results_df, df_results], ignore_index=True)
+        elif df_results is None:
+             logger.warning(f"Query failed for workspace {ws_id}. Results may be incomplete.")
+             # Continue to next workspace
 
-        if df_result is not None: # Includes empty DataFrame for success with 0 records
-            if not df_result.empty:
-                 df_result['WorkspaceID'] = workspace_id # Add workspace context
-                 all_results_df_list.append(df_result)
-        else:
-            query_errors += 1
-            logger.error(f"KQL Query failed for workspace {workspace_id}.")
-            # Continue to next workspace
-
-    # 6. Consolidate results and save to single Excel file
-    final_excel_path = None
-    if all_results_df_list:
-        logger.info(f"Consolidating results from {len(all_results_df_list)} successful query executions...")
-        try:
-            consolidated_df = pd.concat(all_results_df_list, ignore_index=True)
-            logger.info(f"Total consolidated records: {len(consolidated_df)}")
-
-            timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
-            safe_ip = target_ip.replace('.', '_')
-            excel_filename = f"flow_logs_{safe_ip}_{timestamp}"
-
-            final_excel_path = save_to_excel(consolidated_df, excel_filename)
-            if not final_excel_path:
-                 logger.error("Failed to save the consolidated Excel file.")
-
-        except Exception as e:
-            logger.exception(f"Error consolidating or saving final Excel data: {e}")
-            print(f"ERROR: Failed to consolidate or save final Excel file. Check log: {log_file_path}", file=sys.stderr)
-
-    # 7. Final Status Reporting
-    print("\n--- Execution Summary ---")
-    if final_excel_path:
-        print(f"SUCCESS: Analysis partially/fully completed. Results saved to: {final_excel_path}")
-        if query_errors > 0:
-             print(f"WARNING: KQL query failed for {query_errors} workspace(s). Results may be incomplete. Check logs.")
-    elif kql_execution_attempted and query_errors == 0:
-         print("INFO: KQL queries completed successfully, but no matching flow log records were found.")
-    elif kql_execution_attempted and query_errors > 0:
-         print(f"ERROR: KQL query execution failed for {query_errors} workspace(s). No Excel file generated. Check logs.")
-    elif not kql_execution_attempted:
-         # This case implies find_related_nsgs_and_workspaces returned empty before KQL stage
-         print("INFO: No workspaces were identified for querying, possibly due to rate limits during discovery or no relevant resources found. No KQL queries executed.")
-
-    # Check if discovery itself was potentially incomplete (though we proceed best-effort)
-    # We might need to check logs manually for the definitive reason find_... returned empty
-    # For now, the messages above cover the main outcomes.
+    # 6. Save consolidated results to Excel
+    if not all_results_df.empty:
+        safe_ip = target_ip.replace('.', '_')
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        base_filename = f"flow_logs_{safe_ip}_{time_range_label}_{timestamp}"
+        save_to_excel(all_results_df, base_filename)
+    else:
+        logger.info("No flow log records found across all queried workspaces.")
+        print("INFO: No flow log records found for the specified IP and time range.", file=sys.stdout)
 
     logger.info("--- Script execution finished ---")
 
 if __name__ == "__main__":
-    # Check for required dependencies first
-    try:
-        import pandas
-        import openpyxl
-    except ImportError as e:
-        print(f"ERROR: Missing required Python package: {e.name}. Please install it.", file=sys.stderr)
-        print(f"ERROR: You can likely install required packages using: pip install pandas openpyxl", file=sys.stderr)
-        sys.exit(1)
-
     main()
