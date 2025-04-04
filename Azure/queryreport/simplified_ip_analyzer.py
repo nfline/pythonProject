@@ -124,11 +124,12 @@ def ip_in_subnet(ip_address: str, subnet_prefix: str) -> bool:
     except ValueError as e:
         logger.warning(f"Error parsing IP '{ip_address}' or subnet '{subnet_prefix}': {e}")
         return False
-
-def find_related_nsgs_and_workspaces(target_ip: str) -> Dict[str, List[str]]:
-    """
-    Finds NSGs related to the IP (best effort due to rate limits) and maps them to Workspace IDs.
-    Prioritizes NIC-based findings. Attempts subnet scan but continues if it fails.
+    
+    # Modified to accept subscription_id
+    def find_related_nsgs_and_workspaces(target_ip: str, subscription_id: Optional[str] = None) -> Dict[str, List[str]]:
+        """
+        Finds NSGs related to the IP within a specific subscription (if provided) and maps them to Workspace IDs.
+        Prioritizes NIC-based findings. Attempts subnet scan but continues if it fails.
     Returns a dictionary mapping Workspace ID (short form) to a list of associated NSG IDs.
     """
     logger.info(f"Starting best-effort search for NSGs and Workspaces related to IP: {target_ip}")
@@ -139,6 +140,7 @@ def find_related_nsgs_and_workspaces(target_ip: str) -> Dict[str, List[str]]:
     nic_subnet_ids = set()
     subnet_scan_failed = False
     flow_log_query_failed = False
+    subscription_arg = f"--subscriptions \"{subscription_id}\"" if subscription_id else ""
 
     # --- Query 1: Find NICs by IP and their associated Subnet/NSG ---
     logger.info("Step 1: Finding network interfaces via IP (Graph Query 1/3)...")
@@ -151,7 +153,8 @@ def find_related_nsgs_and_workspaces(target_ip: str) -> Dict[str, List[str]]:
     | project id, name, nsgId = tostring(properties.networkSecurityGroup.id), subnetId = tostring(ipConfig.properties.subnet.id) // Project details, get subnet from expanded config
     """
     # REMOVED --query "data" to get the full response object
-    nic_cmd = f"az graph query -q \"{nic_query}\" -o json"
+    # ADDED subscription_arg
+    nic_cmd = f"az graph query -q \"{nic_query}\" {subscription_arg} -o json"
     nics_result = run_command(nic_cmd)
 
     if nics_result is None:
@@ -195,7 +198,8 @@ def find_related_nsgs_and_workspaces(target_ip: str) -> Dict[str, List[str]]:
     | project id, name, addressPrefix = properties.addressPrefix, addressPrefixes = properties.addressPrefixes, nsgId = tostring(properties.networkSecurityGroup.id)
     """
     # REMOVED --query "data"
-    subnets_cmd = f"az graph query -q \"{subnet_query}\" -o json"
+    # ADDED subscription_arg
+    subnets_cmd = f"az graph query -q \"{subnet_query}\" {subscription_arg} -o json"
     all_subnets_result = run_command(subnets_cmd)
 
     if all_subnets_result is None:
@@ -258,7 +262,8 @@ def find_related_nsgs_and_workspaces(target_ip: str) -> Dict[str, List[str]]:
     | project targetResourceId = tostring(properties.targetResourceId), workspaceId=properties.flowAnalyticsConfiguration.networkWatcherFlowAnalyticsConfiguration.workspaceId, enabled=properties.enabled
     """
     # REMOVED --query "data"
-    flow_logs_cmd = f"az graph query -q \"{flow_log_query}\" -o json"
+    # ADDED subscription_arg
+    flow_logs_cmd = f"az graph query -q \"{flow_log_query}\" {subscription_arg} -o json"
     flow_logs_result = run_command(flow_logs_cmd) # Renamed variable
 
     # Check the full response structure
@@ -471,9 +476,11 @@ def save_to_excel(df: pd.DataFrame, base_filename: str) -> Optional[str]:
 # --- Main Execution Logic ---
 
 def main():
-    parser = argparse.ArgumentParser(description="Simplified Azure NSG Flow Log Analyzer. Finds NSGs for an IP, queries logs, and outputs to Excel.")
+    parser = argparse.ArgumentParser(description="Simplified Azure NSG Flow Log Analyzer. Finds NSGs for an IP within a specific subscription, queries logs, and outputs to Excel.")
     parser.add_argument("ip_address", help="The target IP address to analyze.")
+    parser.add_argument("--subscription-id", required=True, help="The Azure Subscription ID to query within.") # Added and made required
     parser.add_argument("--time-range", type=int, default=24, help="Time range in hours for the KQL query (default: 24)")
+    # Removed timeout and batch-hours args as they are not used in this simplified version's main logic directly
 
     args = parser.parse_args()
     target_ip = args.ip_address
@@ -515,7 +522,7 @@ def main():
 
 
     # 3. Find related NSGs and group by Workspace (Best Effort)
-    workspaces_to_query = find_related_nsgs_and_workspaces(target_ip)
+    workspaces_to_query = find_related_nsgs_and_workspaces(target_ip, args.subscription_id) # Pass subscription_id
 
     if not workspaces_to_query:
         # Check logs for specific failure reason (rate limit vs. genuinely no data)
