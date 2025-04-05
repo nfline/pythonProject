@@ -22,25 +22,95 @@ import subprocess
 import ipaddress
 import logging
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional, Tuple
 
 # Import required modules
 import argparse
 import sys
-from .utils.logger import setup_logger, ColorPrinter
-from .utils.azure_cli import run_az_command, check_az_login
-from .models.nsg import NSGAnalyzer
-from .models.flow_logs import FlowLogsManager
-from .reports.excel import generate_excel_report
-from .exceptions import (
-    InvalidIPError,
-    AzureCLIError,
-    NSGNotFoundError,
-    FlowLogsConfigError,
-    WorkspaceAccessError,
-    QueryExecutionError
-)
+import pandas as pd
+
+# Terminal output colors
+class ColorPrinter:
+    """Class for color-coded console output"""
+    
+    @staticmethod
+    def print_info(text):
+        """Print informational message"""
+        print(f"\033[94m[INFO]\033[0m {text}")
+
+    @staticmethod
+    def print_success(text):
+        """Print success message"""
+        print(f"\033[92m[SUCCESS]\033[0m {text}")
+
+    @staticmethod
+    def print_warning(text):
+        """Print warning message"""
+        print(f"\033[93m[WARNING]\033[0m {text}")
+
+    @staticmethod
+    def print_error(text):
+        """Print error message"""
+        print(f"\033[91m[ERROR]\033[0m {text}")
+
+
+def setup_logger():
+    """Configure logger"""
+    logger = logging.getLogger("NSGLogger")
+    logger.setLevel(logging.INFO)
+    
+    formatter = logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    
+    # File handler
+    fh = logging.FileHandler('nsg_analysis.log')
+    fh.setFormatter(formatter)
+    
+    # Console handler
+    ch = logging.StreamHandler()
+    ch.setFormatter(formatter)
+    
+    logger.addHandler(fh)
+    logger.addHandler(ch)
+    return logger
+
+
+def run_az_command(command):
+    """Execute Azure CLI command and return JSON result"""
+    try:
+        result = subprocess.run(
+            command,
+            shell=True,
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        return json.loads(result.stdout)
+    except subprocess.CalledProcessError as e:
+        ColorPrinter.print_error(f"Command execution failed: {e.stderr}")
+        return None
+    except json.JSONDecodeError:
+        ColorPrinter.print_warning("Return result is not valid JSON")
+        return None
+
+
+def check_az_login():
+    """Check Azure login status"""
+    try:
+        subprocess.run(
+            "az account show",
+            shell=True,
+            check=True,
+            capture_output=True
+        )
+        ColorPrinter.print_success("Azure CLI logged in")
+        return True
+    except subprocess.CalledProcessError:
+        ColorPrinter.print_error("Please login using 'az login' first")
+        return False
+
 
 class NSGTrafficAnalyzer:
     """Main analyzer class for NSG traffic analysis"""
@@ -49,8 +119,6 @@ class NSGTrafficAnalyzer:
         self.target_ip = target_ip
         self.output_dir = self._setup_output_directory()
         self.logger = setup_logger()
-        self.nsg_analyzer = NSGAnalyzer(target_ip, self.logger)
-        self.flow_logs_manager = FlowLogsManager(self.logger)
         
     def _setup_output_directory(self) -> str:
         """Create output directory structure"""
@@ -83,129 +151,193 @@ class NSGTrafficAnalyzer:
         except ValueError:
             return False, f"Invalid IP address format: {self.target_ip}"
 
-    def full_analysis(self, time_range_hours: int = 24):
-        """Execute complete analysis workflow"""
-        try:
-            # Input validation
-            valid, error_msg = self._validate_input(time_range_hours)
-            if not valid:
-                raise InvalidIPError(self.target_ip, error_msg)
-                
-            # Phase 1: NSG Discovery
-            self.logger.info("Starting NSG discovery phase")
-            nsg_ids = self.nsg_analyzer.find_associated_nsgs()
-            
-            if not nsg_ids:
-                error_msg = f"No NSGs found associated with target IP: {self.target_ip}"
-                self.logger.warning(error_msg)
-                ColorPrinter.print_warning(error_msg)
-                raise NSGNotFoundError(self.target_ip)
-
-            # Phase 2: Flow Logs Configuration
-            self.logger.info("Retrieving flow logs configuration")
-            flow_configs = self.flow_logs_manager.get_configurations(nsg_ids)
-            
-            # Phase 3: Log Analytics Processing
-            self.logger.info("Processing Log Analytics workspaces")
-            workspace_map = self.flow_logs_manager.get_workspace_mapping(flow_configs)
-            
-            if not workspace_map:
-                error_msg = "No Log Analytics workspaces found for the NSGs"
-                self.logger.warning(error_msg)
-                ColorPrinter.print_warning(error_msg)
-                raise FlowLogsConfigError(nsg_ids[0], "No Log Analytics workspace configured")
-                
-            # Phase 4: Query Execution
-            self.logger.info("Executing KQL queries")
-            query_results = self._execute_queries(workspace_map, time_range_hours)
-            
-            # Phase 5: Report Generation
-            self.logger.info("Generating final report")
-            generate_excel_report(
-                nsg_info=self.nsg_analyzer.get_discovery_data(),
-                flow_configs=flow_configs,
-                query_results=query_results,
-                output_path=os.path.join(self.output_dir, f"report_{self.target_ip}.xlsx")
-            )
-            
-            ColorPrinter.print_success("Analysis completed successfully")
-            return True
-
-        except InvalidIPError as ip_err:
-            self.logger.error(f"Invalid IP address: {str(ip_err)}")
-            ColorPrinter.print_error(f"Input validation failed: {str(ip_err)}")
-        except NSGNotFoundError as nsg_err:
-            self.logger.error(f"NSG discovery failed: {str(nsg_err)}")
-            ColorPrinter.print_error(f"NSG not found: {str(nsg_err)}")
-        except FlowLogsConfigError as flow_err:
-            self.logger.error(f"Flow logs configuration issue: {str(flow_err)}")
-            ColorPrinter.print_error(f"Flow logs error: {str(flow_err)}")
-        except WorkspaceAccessError as ws_err:
-            self.logger.error(f"Workspace access failed: {str(ws_err)}")
-            ColorPrinter.print_error(f"Workspace error: {str(ws_err)}")
-        except QueryExecutionError as q_err:
-            self.logger.error(f"Query execution failed: {str(q_err)}")
-            ColorPrinter.print_error(f"Query error: {str(q_err)}")
-        except subprocess.CalledProcessError as cpe:
-            self.logger.error(f"Azure CLI command failed: {cpe.stderr}")
-            ColorPrinter.print_error(f"Azure CLI error: {cpe.output}")
-            raise AzureCLIError(str(cpe.cmd), str(cpe.output))
-        except Exception as e:
-            self.logger.error(f"Unhandled exception: {str(e)}", exc_info=True)
-            ColorPrinter.print_error(f"Critical error: {str(e)}")
+    def find_associated_nsgs(self) -> List[str]:
+        """Find NSGs associated with target IP"""
+        self.logger.info(f"Searching for NSGs associated with IP: {self.target_ip}")
         
-        return False
+        # Direct resource graph query to find NSGs with rules containing the IP
+        nsg_query = f"""
+        Resources
+        | where type =~ 'microsoft.network/networksecuritygroups'
+        | mv-expand rules=properties.securityRules
+        | where rules.properties.destinationAddressPrefixes contains '{self.target_ip}'
+           or rules.properties.sourceAddressPrefixes contains '{self.target_ip}'
+           or rules.properties.destinationAddressPrefix contains '{self.target_ip}'
+           or rules.properties.sourceAddressPrefix contains '{self.target_ip}'
+        | project id, name, resourceGroup, location
+        """
+        
+        nsg_result = run_az_command(f"az graph query -q \"{nsg_query}\"")
+        
+        if not nsg_result or 'data' not in nsg_result or not nsg_result['data']:
+            ColorPrinter.print_warning(f"No NSGs found directly containing IP: {self.target_ip}")
+            self.logger.info("No NSGs found with explicit rules for the target IP")
+            
+            # Search for the IP in network interfaces
+            self.logger.info("Searching for network interfaces with the target IP...")
+            nic_query = f"""
+            Resources
+            | where type =~ 'microsoft.network/networkinterfaces'
+            | mv-expand ipconfigs=properties.ipConfigurations
+            | where ipconfigs.properties.privateIPAddress =~ '{self.target_ip}'
+            | project id, name, resourceGroup, nsgId = tostring(properties.networkSecurityGroup.id)
+            | where isnotempty(nsgId)
+            """
+            
+            nic_result = run_az_command(f"az graph query -q \"{nic_query}\"")
+            
+            if nic_result and 'data' in nic_result and nic_result['data']:
+                nsg_ids = [nic['nsgId'] for nic in nic_result['data'] if 'nsgId' in nic]
+                self.logger.info(f"Found {len(nsg_ids)} NSGs from network interfaces")
+                return nsg_ids
+            
+            # Search for the IP in subnets
+            self.logger.info("Searching for subnets containing the target IP...")
+            subnet_query = """
+            Resources
+            | where type =~ 'microsoft.network/virtualnetworks'
+            | mv-expand subnet=properties.subnets
+            | project vnetName=name, subnetName=subnet.name, 
+                      subnetPrefix=subnet.properties.addressPrefix, 
+                      nsgId = tostring(subnet.properties.networkSecurityGroup.id)
+            | where isnotempty(nsgId)
+            """
+            
+            subnet_result = run_az_command(f"az graph query -q \"{subnet_query}\"")
+            
+            if subnet_result and 'data' in subnet_result and subnet_result['data']:
+                # Check if IP is in any subnet
+                nsg_ids = []
+                for subnet in subnet_result['data']:
+                    try:
+                        if 'subnetPrefix' in subnet and subnet['subnetPrefix']:
+                            subnet_network = ipaddress.ip_network(subnet['subnetPrefix'])
+                            ip_addr = ipaddress.ip_address(self.target_ip)
+                            if ip_addr in subnet_network:
+                                nsg_ids.append(subnet['nsgId'])
+                                self.logger.info(f"IP {self.target_ip} found in subnet {subnet['subnetName']}")
+                    except ValueError:
+                        continue
+                
+                if nsg_ids:
+                    self.logger.info(f"Found {len(nsg_ids)} NSGs from subnets")
+                    return nsg_ids
+            
+            self.logger.warning("No NSGs found associated with the target IP")
+            return []
+        else:
+            nsg_ids = [nsg['id'] for nsg in nsg_result['data']]
+            self.logger.info(f"Found {len(nsg_ids)} NSGs with rules containing the target IP")
+            return nsg_ids
 
-    def _execute_queries(self, workspace_map: Dict[str, str],
-                        time_range_hours: int) -> Dict[str, Any]:
+    def get_flow_logs_config(self, nsg_ids: List[str]) -> Dict[str, Dict]:
+        """Get flow logs configuration for the NSGs"""
+        self.logger.info("Retrieving flow logs configuration...")
+        flow_logs_config = {}
+        
+        for nsg_id in nsg_ids:
+            # Extract resource group and name from the ID
+            parts = nsg_id.split('/')
+            resource_group = next((parts[i+1] for i, part in enumerate(parts) if part.lower() == 'resourcegroups'), None)
+            nsg_name = parts[-1]
+            
+            if not resource_group or not nsg_name:
+                self.logger.warning(f"Could not extract resource group or name from NSG ID: {nsg_id}")
+                continue
+                
+            try:
+                # First check if the NSG exists
+                nsg_check = run_az_command(f"az network nsg show --name {nsg_name} --resource-group {resource_group}")
+                
+                if not nsg_check:
+                    self.logger.warning(f"NSG {nsg_name} in resource group {resource_group} not found")
+                    continue
+                    
+                # Then check for flow logs
+                result = run_az_command(f"az network watcher flow-log show --nsg {nsg_name} --resource-group {resource_group}")
+                
+                if result:
+                    workspace_id = None
+                    # Extract workspace ID from the configuration if it exists
+                    if 'flowAnalyticsConfiguration' in result:
+                        analytics_config = result.get('flowAnalyticsConfiguration', {})
+                        if 'networkWatcherFlowAnalyticsConfiguration' in analytics_config:
+                            workspace_id = analytics_config['networkWatcherFlowAnalyticsConfiguration'].get('workspaceResourceId')
+                    
+                    flow_logs_config[nsg_id] = {
+                        "enabled": result.get("enabled", False),
+                        "retention_days": result.get("retentionPolicy", {}).get("days", 0),
+                        "storage_id": result.get("storageId"),
+                        "workspace_id": workspace_id
+                    }
+                    self.logger.info(f"Retrieved flow logs config for NSG: {nsg_name}")
+                else:
+                    self.logger.warning(f"Could not retrieve flow logs for NSG: {nsg_name}")
+            except Exception as e:
+                self.logger.error(f"Error getting flow logs for NSG {nsg_id}: {str(e)}")
+        
+        return flow_logs_config
+
+    def get_workspace_mapping(self, flow_configs: Dict[str, Dict]) -> Dict[str, str]:
+        """Get workspace ID mapping from flow logs configuration"""
+        workspace_map = {}
+        
+        for nsg_id, config in flow_configs.items():
+            if config.get("enabled", False) and config.get("workspace_id"):
+                workspace_map[nsg_id] = config["workspace_id"]
+                self.logger.info(f"Mapped NSG {nsg_id} to workspace {config['workspace_id']}")
+        
+        return workspace_map
+
+    def build_kql_query(self, time_range_hours: int) -> str:
+        """Build KQL query for NSG flow logs"""
+        query = f"""
+        AzureNetworkAnalytics_CL
+        | where TimeGenerated >= ago({time_range_hours}h)
+        | where SrcIP_s == '{self.target_ip}' or DestIP_s == '{self.target_ip}'
+        | project TimeGenerated, SrcIP_s, DestIP_s, DestPort_d, Protocol_s,
+                  NSG_s, Subnet_s, Direction_s, 
+                  Action_s, FlowStatus_s, FlowBytes_d
+        | sort by TimeGenerated desc
+        """
+        return query
+
+    def execute_queries(self, workspace_map: Dict[str, str], time_range_hours: int) -> Dict[str, Any]:
         """Execute KQL queries against identified workspaces"""
         results = {}
-        query_generator = KQLQueryBuilder(self.target_ip, time_range_hours)
         
         for nsg_id, workspace_id in workspace_map.items():
             try:
-                self.logger.info(f"Executing query for NSG: {nsg_id}")
-                query = query_generator.build_traffic_analysis_query()
+                # Extract workspace name from full resource ID
+                workspace_name = workspace_id.split('/')[-1]
+                self.logger.info(f"Executing query for NSG {nsg_id} on workspace {workspace_name}")
                 
-                # Use in-memory query instead of temp file when possible
-                if len(query) < 1000:  # For small queries, pass directly
-                    result = run_az_command(
-                        f"az monitor log-analytics query --workspace {workspace_id} "
-                        f"--analytics-query \"{query}\" -o json")
+                # Create query
+                query = self.build_kql_query(time_range_hours)
+                
+                # Save query to temp file
+                temp_dir = "temp_queries"
+                os.makedirs(temp_dir, exist_ok=True)
+                query_file = os.path.join(temp_dir, f"query_{int(time.time())}.kql")
+                
+                with open(query_file, 'w') as f:
+                    f.write(query)
+                
+                # Execute query
+                result = run_az_command(f"az monitor log-analytics query --workspace {workspace_id} --analytics-query @{query_file}")
+                
+                if result:
+                    results[nsg_id] = self._process_query_result(result)
+                    self.logger.info(f"Query executed successfully for NSG {nsg_id}")
                 else:
-                    # For larger queries, use temp file approach
-                    query_file = query_generator.save_temp_query()
-                    self.logger.debug(f"Using query file: {query_file}")
-                    result = run_az_command(
-                        f"az monitor log-analytics query --workspace {workspace_id} "
-                        f"--analytics-query @{query_file} -o json")
-                
-                if result is None:
-                    raise WorkspaceAccessError(workspace_id, "Failed to query workspace")
-                    
-                results[nsg_id] = self._process_query_result(result)
-                self.logger.info(f"Query for NSG {nsg_id} returned {len(result)} results")
-                    
+                    self.logger.warning(f"Query returned no results for NSG {nsg_id}")
             except Exception as e:
-                error_msg = f"Query failed for NSG {nsg_id}: {str(e)}"
-                self.logger.error(error_msg)
-                if isinstance(e, WorkspaceAccessError):
-                    raise
-                raise QueryExecutionError(query, workspace_id, error_msg)
-                
-        # Clean up temporary files
-        query_generator.cleanup_temp_files()
+                self.logger.error(f"Error executing query for NSG {nsg_id}: {str(e)}")
+        
         return results
 
     def _process_query_result(self, raw_result: List[Dict]) -> Dict:
-        """Process and standardize query results
-        
-        Extracts meaningful metrics from raw query results:
-        - Total number of flows
-        - Inbound/outbound traffic volume
-        - Unique ports in use
-        - Actions taken (allowed/denied)
-        """
+        """Process and standardize query results"""
         processed = {
             'total_flows': len(raw_result),
             'inbound_bytes': 0,
@@ -232,67 +364,112 @@ class NSGTrafficAnalyzer:
                 
         return processed
 
-class KQLQueryBuilder:
-    """Build and manage KQL queries"""
-    
-    def __init__(self, target_ip: str, time_range_hours: int):
-        self.target_ip = target_ip
-        self.time_range = time_range_hours
-        self.temp_dir = "temp_queries"
-        self.query_cache = {}  # Cache queries to avoid regenerating
-        os.makedirs(self.temp_dir, exist_ok=True)
-        
-    def build_traffic_analysis_query(self) -> str:
-        """Construct main traffic analysis query
-        
-        Creates an optimized KQL query that filters for traffic involving
-        the target IP address within the specified time range
-        """
-        # Check cache first
-        cache_key = f"{self.target_ip}_{self.time_range}"
-        if cache_key in self.query_cache:
-            return self.query_cache[cache_key]
-            
-        # Calculate the time range with proper format
-        time_ago = f"{self.time_range}h"
-            
-        query = f"""
-        AzureNetworkAnalytics_CL
-        | where TimeGenerated >= ago({time_ago})
-        | where SrcIP_s == '{self.target_ip}' or DestIP_s == '{self.target_ip}'
-        | project TimeGenerated, SrcIP_s, DestIP_s, DestPort_d, Protocol_s,
-                  NSG_s, Subnet_s, VM_s, Direction_s, 
-                  Action_s, FlowStatus_s, FlowBytes_d
-        | sort by TimeGenerated desc
-        """
-        
-        # Store in cache
-        self.query_cache[cache_key] = query
-        return query
-
-    def save_temp_query(self) -> str:
-        """Save query to temporary file"""
-        temp_path = os.path.join(self.temp_dir, f"query_{self.target_ip}_{int(time.time())}.kql")
-        with open(temp_path, 'w') as f:
-            f.write(self.build_traffic_analysis_query())
-        return temp_path
-        
-    def cleanup_temp_files(self, max_age_hours: int = 24):
-        """Clean up old temporary query files
-        
-        Args:
-            max_age_hours: Maximum age of files to keep, in hours
-        """
+    def generate_excel_report(self, nsg_info, flow_configs, query_results):
+        """Generate Excel report with analysis results"""
         try:
-            current_time = datetime.now()
-            for filename in os.listdir(self.temp_dir):
-                file_path = os.path.join(self.temp_dir, filename)
-                file_modified = datetime.fromtimestamp(os.path.getmtime(file_path))
-                if (current_time - file_modified) > timedelta(hours=max_age_hours):
-                    os.remove(file_path)
+            # Create dataframe
+            report_data = []
+            
+            for nsg_id, results in query_results.items():
+                nsg_name = nsg_id.split('/')[-1]
+                report_data.append({
+                    "NSG Name": nsg_name,
+                    "Total Flows": results.get('total_flows', 0),
+                    "Inbound Traffic (MB)": results.get('inbound_bytes', 0) / 1024**2,
+                    "Outbound Traffic (MB)": results.get('outbound_bytes', 0) / 1024**2,
+                    "Open Ports Count": len(results.get('ports', set()))
+                })
+            
+            # If no results, add empty row
+            if not report_data:
+                report_data.append({
+                    "NSG Name": "No Data",
+                    "Total Flows": 0,
+                    "Inbound Traffic (MB)": 0,
+                    "Outbound Traffic (MB)": 0,
+                    "Open Ports Count": 0
+                })
+            
+            df = pd.DataFrame(report_data)
+            
+            # Write to Excel file
+            output_path = os.path.join(self.output_dir, f"report_{self.target_ip}.xlsx")
+            with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
+                df.to_excel(writer, index=False, sheet_name='Traffic Summary')
+                
+            self.logger.info(f"Report generated: {output_path}")
+            ColorPrinter.print_success(f"Report generated: {output_path}")
+            return output_path
         except Exception as e:
-            # Just log errors but don't fail the main process
-            print(f"Failed to clean up temp files: {str(e)}")
+            self.logger.error(f"Failed to generate report: {str(e)}")
+            ColorPrinter.print_error(f"Failed to generate report: {str(e)}")
+            return None
+
+    def full_analysis(self, time_range_hours: int = 24):
+        """Execute complete analysis workflow"""
+        try:
+            # Input validation
+            valid, error_msg = self._validate_input(time_range_hours)
+            if not valid:
+                self.logger.error(f"Invalid input: {error_msg}")
+                ColorPrinter.print_error(f"Input validation failed: {error_msg}")
+                return False
+                
+            # Phase 1: NSG Discovery
+            self.logger.info("Starting NSG discovery phase")
+            nsg_ids = self.find_associated_nsgs()
+            
+            if not nsg_ids:
+                self.logger.warning("No NSGs found associated with target IP")
+                ColorPrinter.print_warning("No NSGs found associated with target IP")
+                return False
+
+            # Phase 2: Flow Logs Configuration
+            self.logger.info("Retrieving flow logs configuration")
+            flow_configs = self.get_flow_logs_config(nsg_ids)
+            
+            if not flow_configs:
+                self.logger.warning("No flow logs configuration found")
+                ColorPrinter.print_warning("No flow logs configuration found")
+                return False
+            
+            # Phase 3: Log Analytics Processing
+            self.logger.info("Processing Log Analytics workspaces")
+            workspace_map = self.get_workspace_mapping(flow_configs)
+            
+            if not workspace_map:
+                self.logger.warning("No Log Analytics workspaces found with flow logs enabled")
+                ColorPrinter.print_warning("No Log Analytics workspaces found with flow logs enabled")
+                return False
+                
+            # Phase 4: Query Execution
+            self.logger.info("Executing KQL queries")
+            query_results = self.execute_queries(workspace_map, time_range_hours)
+            
+            if not query_results:
+                self.logger.warning("No query results returned")
+                ColorPrinter.print_warning("No query results returned")
+                return False
+            
+            # Phase 5: Report Generation
+            self.logger.info("Generating final report")
+            report_path = self.generate_excel_report(
+                nsg_info={"nsg_ids": nsg_ids},
+                flow_configs=flow_configs,
+                query_results=query_results
+            )
+            
+            if report_path:
+                ColorPrinter.print_success("Analysis completed successfully")
+                return True
+            else:
+                return False
+
+        except Exception as e:
+            self.logger.error(f"Unhandled exception: {str(e)}", exc_info=True)
+            ColorPrinter.print_error(f"Critical error: {str(e)}")
+            return False
+
 
 def main():
     """Main entry point function"""
@@ -330,7 +507,8 @@ def main():
             if hasattr(time, 'tzset'):  # Only available on Unix
                 time.tzset()
         except ValueError:
-            raise InvalidIPError(args.ip_address)
+            ColorPrinter.print_error("Invalid IP address format")
+            sys.exit(1)
             
         # Check Azure CLI login status
         if not check_az_login():
@@ -344,22 +522,9 @@ def main():
     except KeyboardInterrupt:
         ColorPrinter.print_warning("Operation cancelled by user")
         sys.exit(130)
-    except InvalidIPError as ip_err:
-        ColorPrinter.print_error(f"IP validation error: {str(ip_err)}")
-        sys.exit(1)
-    except AzureCLIError as az_err:
-        ColorPrinter.print_error(f"Azure CLI error: {str(az_err)}")
-        sys.exit(1)
     except Exception as e:
         ColorPrinter.print_error(f"Critical error: {str(e)}")
         sys.exit(1)
 
-# Ensure main function is executed only when script is run directly, not when imported as module
 if __name__ == "__main__":
-    # Add current directory to Python path to ensure relative imports work correctly
-    import os
-    import sys
-    package_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    if package_root not in sys.path:
-        sys.path.insert(0, package_root)
     main()
