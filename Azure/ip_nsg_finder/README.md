@@ -34,7 +34,8 @@ ip_nsg_finder/
 3. 从命令行运行：
 
 ```
-python -m azure.ip_nsg_finder.main --ip <目标IP地址> [--time-range <小时数>] [--verbose]
+到根目录
+python -m ip_nsg_finder.main --ip <目标IP地址> [--time-range <小时数>] [--verbose]
 ```
 
 参数说明：
