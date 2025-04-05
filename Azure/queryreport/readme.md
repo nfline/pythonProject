@@ -19,6 +19,7 @@
 ### 最新Python脚本版本 (ip_nsg_finder.py)
 - Python 3.7+
 - 无需特殊的Azure SDK包，仅使用标准库和Azure CLI
+- 可选：pandas 和 openpyxl (用于Excel报告生成)
 
 ### Bash脚本版本
 - jq (JSON处理工具)
@@ -33,10 +34,54 @@
   - azure-mgmt-monitor
   - azure-mgmt-loganalytics
 
+## 项目结构
+本项目采用模块化架构，设计为可自包含部署。核心组件组织如下：
+
+```mermaid
+graph TD
+    A[queryreport] --> B[main.py]
+    A --> C[ip_nsg_finder.py]
+    A --> D[utils/]
+    A --> E[models/]
+    A --> F[reports/]
+    A --> G[exceptions.py]
+    
+    D --> D1[azure_cli.py]
+    D --> D2[logger.py]
+    
+    E --> E1[nsg.py]
+    E --> E2[flow_logs.py]
+    
+    F --> F1[excel.py]
+    
+    style B fill:#f9f,stroke:#333,stroke-width:2px
+    style C fill:#bbf,stroke:#333,stroke-width:1px
+```
+
+### 关键组件说明
+- **main.py**: 统一入口点，支持在任何位置运行脚本
+- **ip_nsg_finder.py**: 核心业务逻辑实现
+- **utils/**: 工具类模块，包含Azure CLI命令执行和日志处理
+- **models/**: 数据模型类，包含NSG分析器和流日志管理器
+- **reports/**: 报告生成模块，支持Excel导出
+- **exceptions.py**: 自定义异常类定义
+
+## 自包含设计
+从2.1.0版本开始，本工具采用完全自包含设计，具有以下特点：
+
+1. **可复制性**: 整个`queryreport`目录可以复制到任何位置并正常工作
+2. **自动路径处理**: 动态识别运行环境，无需手动调整路径
+3. **统一入口点**: 通过`main.py`提供标准化启动方式 
+4. **模块化架构**: 使用相对导入，确保组件间引用不依赖安装位置
+
 ## 安装步骤
 ### 最新Python脚本版本
 1. 确保已安装Python 3.7+和Azure CLI
-2. 下载脚本到本地目录
+2. 下载或复制整个`queryreport`目录到任意位置
+3. （可选）安装pandas和openpyxl用于报告生成
+   ```bash
+   pip install pandas openpyxl
+   ```
 
 ### Bash脚本版本
 1. 下载脚本到本地目录
@@ -66,26 +111,40 @@
 
 ### 最新版Python脚本 (推荐)
 ```bash
-# 基本用法 - 只查找与IP关联的NSG
-python ip_nsg_finder.py <IP地址>
-
-# 完整分析 - 生成KQL查询但不执行
-python ip_nsg_finder.py <IP地址> --analyze
-
-# 执行完整分析并运行KQL查询
-python ip_nsg_finder.py <IP地址> --analyze --execute
-
-# 直接指定工作区ID进行查询
-python ip_nsg_finder.py <IP地址> --workspace-id <工作区ID>
-
-# 直接查询模式 - 跳过NSG查找
-python ip_nsg_finder.py <IP地址> --direct-query --workspace-id <工作区ID>
-
-# 不使用NSG名称过滤的查询
-python ip_nsg_finder.py <IP地址> --analyze --no-nsg-filter
+# 使用统一入口点运行（推荐）
+python queryreport/main.py <IP地址>
 
 # 指定查询时间范围（小时）
-python ip_nsg_finder.py <IP地址> --time-range 48
+python queryreport/main.py <IP地址> --time-range 48
+
+# 启用详细日志模式
+python queryreport/main.py <IP地址> --verbose
+
+# 直接使用ip_nsg_finder.py（作为模块）
+python -m queryreport.ip_nsg_finder <IP地址>
+```
+
+### 从任意位置运行
+脚本设计支持从任何位置运行，只需复制整个`queryreport`目录：
+```bash
+# 复制到目标位置
+cp -r queryreport /path/to/destination/
+
+# 运行分析
+cd /path/to/destination
+python queryreport/main.py 10.10.10.10
+```
+
+### 在Python代码中集成
+```python
+# 导入分析器类
+from queryreport.ip_nsg_finder import NSGTrafficAnalyzer
+
+# 创建分析器实例
+analyzer = NSGTrafficAnalyzer("10.10.10.10")
+
+# 执行分析
+results = analyzer.full_analysis(time_range_hours=24)
 ```
 
 ### Bash脚本
@@ -100,145 +159,111 @@ python query_ip_azure.py <IP地址> [天数]
 
 示例:
 ```bash
-# 查询特定IP过去30天的流量日志(默认)
-./query_ip_azure_improved.sh 10.10.10.10
+# 查询特定IP过去24小时的流量日志(默认)
+python queryreport/main.py 10.10.10.10
+
+# 使用Bash版本查询过去30天的流量日志
+./query_ip_azure_improved.sh 10.10.10.10 30
 
 # 使用旧版Python版本查询过去60天的流量日志
 python query_ip_azure.py 10.10.10.10 60
-
-# 使用最新版本查询并执行KQL查询
-python ip_nsg_finder.py 10.10.10.10 --analyze --execute
 ```
 
 ## 最新版本 (ip_nsg_finder.py) 功能特点
 
 ### 主要优势
 1. **无SDK依赖** - 仅依赖Azure CLI，无需安装额外的Python包
-2. **智能错误恢复** - 自动修复工作区ID格式，支持多种输入格式
-3. **增强型KQL引擎** - 支持带超时机制和NSG过滤开关的查询
-4. **多模式查询** - 新增：
-   - 直接查询模式 (--direct-query)
-   - 无NSG过滤模式 (--no-nsg-filter)
-   - 超时控制 (--timeout)
-5. **改进的输出** - 新增查询统计文件和超时日志
+2. **自包含设计** - 整个目录可复制到任意位置正常运行
+3. **增强型NSG搜索** - 同时查询单数和复数形式的地址前缀
+4. **智能路径处理** - 自动识别运行环境，解决路径依赖问题
+5. **改进的异常处理** - 结构化异常系统，更好的错误反馈
+6. **优化查询性能** - 查询缓存和临时文件管理
+7. **类型检测** - 自动区分公网和私网IP地址
 
 ### 输出内容
 脚本执行后会在`output`目录中生成以下文件：
 
-- **NSG相关信息**
-  - `network_interfaces.json` - 与IP直接关联的网络接口
-  - `nsg_ids.json` - 与IP关联的所有NSG ID
-  - `all_subnets.json` - 所有子网信息
-  - `subnet_*.json` - 特定子网的详细信息
+- **NSG分析报告**
+  - `report_<IP地址>.xlsx` - 综合Excel报告
+  - `analysis_<IP地址>/` - 分析结果目录
 
-- **流日志配置**
-  - `flow_logs_config.json` - 所有NSG的流日志配置
-  - `flow_logs_*.json` - 特定NSG的流日志配置
-  - `workspace_ids.json` - Log Analytics工作区ID
+## 常见问题解决
 
-- **KQL查询**
-  - `kql_queries.json` - 所有生成的查询
-  - `kql_query_*.kql` - 特定工作区的KQL查询
-  - `query_results_*.json` - 查询结果
+### 找不到模块或导入错误
+如果遇到模块导入错误：
+- 确保使用`main.py`作为入口点运行脚本
+- 或者使用`python -m queryreport.ip_nsg_finder`方式运行
 
-- **分析结果**
-  - `analysis_results.json` - 整体分析结果摘要
+### KQL查询执行错误
+- 检查是否已登录Azure CLI (`az login`)
+- 确认对Log Analytics工作区有查询权限
+- 检查NSG流日志是否已配置
 
-## 最新版本常见问题解决
+### Excel报告生成失败
+- 安装必要的依赖：`pip install pandas openpyxl`
+- 确保输出目录有写入权限
 
-### KQL查询执行卡住
-这个问题在最新版本中已修复。如果查询仍然运行缓慢：
-- 尝试使用`--timeout`参数指定较短的超时时间
-- 使用`--no-nsg-filter`参数可能会提高查询性能
-- 确认工作区ID格式正确，可能需要删除完整资源路径
+## 代码示例：完整流量分析
 
-### 查询结果为空
-可能的原因：
-- Log Analytics工作区中没有包含目标IP的流量日志
-- 日期范围内没有相关数据
-- NSG流日志未正确配置或未启用
+```python
+from queryreport.ip_nsg_finder import NSGTrafficAnalyzer
+from queryreport.utils import setup_logger
 
-解决方法：
-- 使用`--time-range`参数扩大查询时间范围
-- 确保NSG已配置流日志并启用
-- 尝试直接使用Azure门户验证查询
+# 创建日志记录器
+logger = setup_logger()
 
-### 工作区ID格式问题
-如果收到工作区ID格式错误：
-- 使用`--workspace-id`参数直接指定正确的ID
-- 确保提供的是工作区ID而非完整资源路径
-- 如果提供了完整路径，脚本会自动提取末尾的ID部分
+# 创建分析器实例
+analyzer = NSGTrafficAnalyzer("10.0.0.1")
 
-## Windows环境中的运行方法
-在Windows系统中运行这些脚本有以下几种方式：
+# 执行完整分析流程
+success = analyzer.full_analysis(time_range_hours=48)
 
-### 运行最新版Python脚本
-直接在Windows PowerShell或命令提示符中运行：
-```powershell
-python C:\Users\wufei\python\pythonProject\azure\queryreport\ip_nsg_finder.py <IP地址> --analyze
+if success:
+    logger.info("分析完成，请查看输出目录中的报告")
+else:
+    logger.error("分析过程中出现错误")
 ```
 
-### 运行Bash脚本
-1. **使用Windows Subsystem for Linux (WSL)**
-   ```powershell
-   # 打开WSL
-   wsl
-   
-   # 导航到脚本目录
-   cd /mnt/c/Users/wufei/python/pythonProject/azure/queryreport/
-   
-   # 运行脚本
-   ./query_ip_azure_improved.sh <IP地址> [天数]
-   ```
+## 流程图：数据处理流程
 
-2. **使用Git Bash**
-   如果已安装Git for Windows，可以使用Git Bash运行脚本。
-
-3. **使用Docker**
-   ```powershell
-   docker run -it --rm -v C:\Users\wufei\python\pythonProject\azure\queryreport:/data ubuntu:latest bash -c "apt update && apt install -y jq curl && curl -sL https://aka.ms/InstallAzureCLIDeb | bash && cd /data && chmod +x query_ip_azure_improved.sh && ./query_ip_azure_improved.sh <IP地址> [天数]"
-   ```
-
-### 运行旧版Python脚本
-直接在Windows PowerShell或命令提示符中运行：
-```powershell
-python C:\Users\wufei\python\pythonProject\azure\queryreport\query_ip_azure.py <IP地址> [天数]
+```mermaid
+flowchart TD
+    A[输入IP地址] --> B{IP格式验证}
+    B -->|验证通过| C[查询相关NSG]
+    B -->|验证失败| Z[报错退出]
+    
+    C --> D{找到NSG?}
+    D -->|是| E[获取流日志配置]
+    D -->|否| Z
+    
+    E --> F{已启用流日志?}
+    F -->|是| G[获取工作区映射]
+    F -->|否| Z
+    
+    G --> H[执行KQL查询]
+    H --> I[生成Excel报告]
+    I --> J[完成]
 ```
 
-## 工作流程对比
+## 问题反馈与贡献
 
-### 最新版本 (ip_nsg_finder.py) 流程
-1. **NSG发现阶段**
-   - 通过Azure Resource Graph查找与目标IP关联的网络接口
-   - 查找包含该IP的子网
-   - 提取相关NSG
+如遇问题，请先尝试：
+1. 使用最新版本的脚本
+2. 确认Azure CLI已正确安装并登录
+3. 检查必要的权限配置
 
-2. **流日志配置阶段**
-   - 获取NSG流日志配置
-   - 提取Log Analytics工作区ID
+## 更新日志
 
-3. **KQL查询阶段**
-   - 生成针对目标IP的KQL查询
-   - 可选择性地执行查询
-   - 汇总并保存结果
+### v2.1.0 (当前版本)
+- 自包含设计，可在任何位置运行
+- 添加main.py统一入口点
+- 改进NSG搜索逻辑，支持更多地址前缀形式
+- 优化查询性能和临时文件管理
+- 添加IP类型自动检测（公网/私网）
+- 改进错误处理机制
 
-### 旧版流程
-1. **资源发现阶段**
-   - 查找与目标IP关联的网络接口
-   - 如果没有直接相关资源，则查找包含该IP的NSG规则
-   - 获取相关NSG的流日志配置
-
-2. **数据收集阶段**
-   - 查询相关NSG对应的Log Analytics工作区
-   - 执行网络流量、安全事件和统计分析查询
-
-3. **报告生成阶段**
-   - 合并所有查询结果
-   - 生成汇总CSV文件
-
-## 流程图
-在`mermaid.md`文件中提供了完整的流程图，展示了脚本的工作流程。
-
----
-
-*注意: 这些脚本仅用于查询，不会修改Azure环境中的任何配置。*
+### v2.0.0
+- 完全重构为模块化架构
+- 添加Excel报告生成功能
+- 实现KQL查询结果处理优化
+- 增强日志记录和颜色输出
