@@ -499,406 +499,581 @@ def execute_kql_query(workspace_id: str, kql_query: str, target_ip: str, nsg_id:
                  try:
                      with open(raw_output_path, 'w', encoding='utf-8') as rf: rf.write(stdout) # Save original stdout
                      logger.info(f"Raw output saved to {raw_output_path}")
+                     print_info(f"Raw output saved to {raw_output_path}")
                  except IOError as e:
-                     logger.error(f"Failed to save raw output to {raw_output_path}: {e}")
-                 results = {"tables": []} # Return empty structure to avoid downstream errors
+                     logger.warning(f"Could not save raw output: {e}")
+                     print_warning(f"Could not save raw output: {e}")
+                 return {"tables": []} # Return empty structure to avoid downstream errors
+
+            # --- Validation after potential reconstruction ---
+            # Now 'results' should always be a dict, check if 'tables' exists and is a list
+            if not isinstance(results.get('tables'), list):
+                 # This case should ideally not be reached if the above logic is correct
+                 logger.error(f"Internal error: Failed to reconstruct standard JSON structure for NSG '{nsg_name}'.")
+                 print_error(f"Internal error processing query results for NSG '{nsg_name}'.")
+                 return {"tables": []}
+
+
+            # --- Save Results (JSON and Excel) ---
+            base_filename = f"query_results_{target_ip.replace('.', '_')}_{nsg_name}_{timestamp}"
+            result_file_dir = os.path.join(output_dir, "query_results") # Subdirectory for results
+            os.makedirs(result_file_dir, exist_ok=True)
+
+            # Save original JSON results (the potentially reconstructed one)
+            json_result_path = os.path.join(result_file_dir, f"{base_filename}.json")
+            save_json(results, json_result_path) # Use the existing save_json function
+            logger.info(f"JSON results saved to {json_result_path}")
+
+            # Process and save to Excel
+            result_count = 0
+            if isinstance(results.get('tables'), list) and len(results['tables']) > 0:
+                 table = results['tables'][0]
+                 if isinstance(table.get('rows'), list):
+                     result_count = len(table['rows'])
+
+                 logger.info(f"Query for NSG '{nsg_name}' returned {result_count} records.")
+                 print_success(f"Query for NSG '{nsg_name}' returned {result_count} records.")
+
+                 if result_count > 0:
+                     try:
+                         columns = [col['name'] for col in table['columns']]
+                         rows = table['rows']
+                         df = pd.DataFrame(rows, columns=columns)
+
+                         excel_result_path = os.path.join(result_file_dir, f"{base_filename}.xlsx")
+                         # Ensure excel engine is available
+                         try:
+                             import openpyxl
+                         except ImportError:
+                              logger.error("Module 'openpyxl' not found. Cannot save to Excel. Run: pip install openpyxl")
+                              print_error("Module 'openpyxl' not found. Cannot save to Excel. Please install it.")
+                              # Still return results, just skip Excel saving
+                              return results
+
+                         df.to_excel(excel_result_path, index=False, engine='openpyxl')
+                         logger.info(f"Excel results saved to {excel_result_path}")
+                         print_success(f"Excel results saved to {excel_result_path}")
+
+                         # Print sample records (from DataFrame)
+                         print_info("Sample records (up to 3):")
+                         print(df.head(3).to_string())
+
+                     except ImportError:
+                         # This case handles pandas import error, though it's imported at the top
+                         logger.warning("Pandas not installed? Cannot save to Excel. Please install: pip install pandas")
+                         print_warning("Pandas not installed? Cannot save to Excel.")
+                     except Exception as e:
+                         logger.error(f"Error saving results to Excel for NSG '{nsg_name}': {e}")
+                         print_error(f"Error saving results to Excel for NSG '{nsg_name}': {e}")
+                 else:
+                      logger.info(f"No records found for NSG '{nsg_name}' to save to Excel.")
+            else:
+                 logger.warning(f"Query result for NSG '{nsg_name}' has no 'tables' array or is not a list.")
+                 print_warning(f"Query result for NSG '{nsg_name}' has an unexpected structure (no tables/rows).")
+
+
+            return results # Return the parsed results
 
         except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse JSON response for NSG '{nsg_name}': {e}")
-            logger.error(f"Raw Stdout (first 1000 chars):\n{stdout[:1000]}")
-            print_error(f"Failed to parse JSON response for NSG '{nsg_name}'. See log: {log_file_path}")
+            logger.error(f"Failed to parse query results as JSON for NSG '{nsg_name}': {e}")
+            # Log more context about the raw output that failed parsing
+            logger.info(f"Raw output that failed JSON parsing (first 500 chars): {stdout[:500]}...")
+            print_error(f"Failed to parse query results as JSON for NSG '{nsg_name}': {e}")
             # Save raw output for debugging
-            raw_output_path = os.path.join(output_dir, f"query_results_{target_ip}_{nsg_name}_{timestamp}_error.txt")
+            raw_output_path = os.path.join(output_dir, f"query_results_{target_ip}_{nsg_name}_{timestamp}_raw.txt")
             try:
                 with open(raw_output_path, 'w', encoding='utf-8') as rf: rf.write(stdout)
                 logger.info(f"Raw output saved to {raw_output_path}")
-            except IOError as io_e:
-                logger.error(f"Failed to save raw error output to {raw_output_path}: {io_e}")
-            return None # Return None on JSON parsing error
+                print_info(f"Raw output saved to {raw_output_path}")
+            except IOError as ioe:
+                logger.warning(f"Could not save raw output: {ioe}")
+                print_warning(f"Could not save raw output: {ioe}")
+            return None # Indicate failure
 
     except subprocess.TimeoutExpired:
-        logger.error(f"KQL query command timed out after {cli_timeout} seconds for NSG '{nsg_name}'.")
-        print_error(f"KQL query command timed out for NSG '{nsg_name}'. Try increasing the timeout or reducing the time range.")
+        error_msg = f"Command timed out after {cli_timeout} seconds for NSG '{nsg_name}'."
+        logger.error(error_msg)
+        print_error(error_msg)
         if process:
-            process.kill() # Ensure the process is terminated
-            stdout, stderr = process.communicate() # Capture any final output
-            logger.warning(f"Process killed due to timeout. Final stdout: {stdout[:500]}..., stderr: {stderr[:500]}...")
-        return None # Return None on timeout
+            process.kill() # Ensure process is terminated
+            logger.info("Killed timed-out process.")
+        return None
     except Exception as e:
-        logger.exception(f"An unexpected error occurred during KQL query execution for NSG '{nsg_name}': {e}")
-        print_error(f"An unexpected error occurred during KQL query for NSG '{nsg_name}'. See log: {log_file_path}")
-        return None # Return None on other exceptions
+        error_msg = f"An unexpected error occurred during query execution for NSG '{nsg_name}': {e}"
+        logger.exception(error_msg) # Log exception with traceback
+        print_error(error_msg)
+        return None
     finally:
-        # Clean up the temporary query file
-        try:
-            if os.path.exists(temp_query_file):
+        # Clean up temporary query file
+        if 'temp_query_file' in locals() and os.path.exists(temp_query_file):
+            try:
                 os.remove(temp_query_file)
-                logger.info(f"Temporary query file removed: {temp_query_file}")
-        except OSError as e:
-            logger.warning(f"Failed to remove temporary query file {temp_query_file}: {e}")
+                logger.info(f"Removed temporary query file: {temp_query_file}")
+            except OSError as e:
+                logger.warning(f"Could not remove temporary query file {temp_query_file}: {e}")
 
-    # --- Save Results to Excel ---
-    if results and results.get("tables"):
-        try:
-            # Extract data for DataFrame
-            primary_table = results['tables'][0]
-            columns = [col['name'] for col in primary_table['columns']]
-            data = primary_table['rows']
-
-            if data: # Only save if there is data
-                df = pd.DataFrame(data, columns=columns)
-                excel_file_name = f"query_results_{target_ip}_{nsg_name}_{timestamp}.xlsx"
-                excel_file_path = os.path.join(output_dir, excel_file_name)
-
-                # Ensure output directory exists (should already, but double-check)
-                os.makedirs(output_dir, exist_ok=True)
-
-                df.to_excel(excel_file_path, index=False, engine='openpyxl') # Specify engine
-                logger.info(f"Query results saved to Excel: {excel_file_path}")
-                print_success(f"Query results for NSG '{nsg_name}' saved to: {excel_file_path}")
-            else:
-                logger.info(f"No rows returned in the query result for NSG '{nsg_name}'. Excel file not created.")
-                print_info(f"No data returned from query for NSG '{nsg_name}'.")
-
-        except ImportError:
-            logger.warning("Pandas or openpyxl not installed. Cannot save results to Excel. Please install with: pip install pandas openpyxl")
-            print_warning("Pandas or openpyxl not installed. Skipping Excel export.")
-        except KeyError as e:
-            logger.error(f"Unexpected structure in KQL result JSON for NSG '{nsg_name}', missing key: {e}. Cannot process for Excel.")
-            print_error(f"Unexpected KQL result structure for NSG '{nsg_name}'. Cannot save to Excel.")
-        except Exception as e:
-            logger.exception(f"Failed to save results to Excel for NSG '{nsg_name}': {e}")
-            print_error(f"Failed to save results to Excel for NSG '{nsg_name}'. See log: {log_file_path}")
-
-    logger.info(f"--- Finished KQL Query Execution for NSG {nsg_name} ---")
-    return results # Return the parsed JSON results (or the wrapped structure)
+    # This part should ideally not be reached if results are returned within the try block
+    return results # Should contain the parsed data if successful
 
 
 def generate_simple_kql_query(target_ip: str, time_range_hours: int = 24) -> str:
-    """Generates a basic KQL query for NSG flow logs"""
-    # Calculate time range
+    """Generates a basic KQL query for NSG flow logs (AzureNetworkAnalytics_CL)."""
+    # Default table name, adjust if needed
+    table_name = "AzureNetworkAnalytics_CL"
+    # Time range calculation
     end_time = datetime.now(timezone.utc)
     start_time = end_time - timedelta(hours=time_range_hours)
     start_time_str = start_time.strftime('%Y-%m-%dT%H:%M:%SZ')
     end_time_str = end_time.strftime('%Y-%m-%dT%H:%M:%SZ')
 
-    # Basic query structure - assumes AzureNetworkAnalytics_CL table
-    # Adjust table name if necessary (e.g., NetworkMonitoring)
-    kql = f"""
-AzureNetworkAnalytics_CL
-| where TimeGenerated between (datetime({start_time_str}) .. datetime({end_time_str}))
-| where FlowType_s == "AzureNetwork" // Focus on NSG flows
-| where SubType_s == "FlowLog"
-| where PublicIPs_s contains "{target_ip}" or SrcIP_s == "{target_ip}" or DestIP_s == "{target_ip}"
-| project TimeGenerated, FlowStartTime_t, FlowEndTime_t, NSGName=NSGName_s, NSGRuleName_s, SrcIP_s, DestIP_s, SrcPort_d, DestPort_d, Protocol_s=L4Protocol_s, FlowDirection_s, Allowed=isnotempty(NSGRuleName_s) and AllowedOrDenied_s == 'Allowed', PublicIPs_s, VMIP_s, SubscriptionId=SubscriptionId_g, ResourceGroup=ResourceGroup_s
+    # Basic query structure
+    query = f"""
+{table_name}
+| where TimeGenerated between (datetime('{start_time_str}') .. datetime('{end_time_str}'))
+| where FlowType_s == "AzureNetworkAnalytics" # Ensure we are looking at flow logs
+| where SrcIP_s == "{target_ip}" or DestIP_s == "{target_ip}"
+# Add more fields as needed
+| project TimeGenerated, FlowStartTime_t, SrcIP_s, SrcPort_d, DestIP_s, DestPort_d, Protocol_s, FlowDirection_s, FlowStatus_s, NSGList_s, NSGRule_s, NetworkIntent_s, L7Protocol_s, DestPublicIPs_s, DestPrivateIPs_s, InboundBytes_d, OutboundBytes_d, InboundPackets_d, OutboundPackets_d
 | order by TimeGenerated desc
-| limit 1000 // Add a limit to prevent excessively large results initially
+# | take 100 # Optional: Limit results during testing
 """
-    return kql
+    return query.strip()
+
 
 def generate_kql_query(target_ip: str,
-                       time_range_hours: int = 24,
-                       include_public_ips: bool = True,
-                       include_private_ips: bool = True,
-                       flow_type: str = "AzureNetwork", # or "AWSNetwork", etc.
-                       sub_type: str = "FlowLog",
-                       limit: int = 1000,
-                       custom_table_name: Optional[str] = None) -> str:
+                       time_range_hours: int = 24, # Keep for default case
+                       nsg_id: Optional[str] = None,
+                       start_time_dt: Optional[datetime] = None,
+                       end_time_dt: Optional[datetime] = None) -> str:
     """
-    Generates a more flexible KQL query for network flow logs.
-
-    Args:
-        target_ip: The IP address to search for.
-        time_range_hours: The lookback period in hours.
-        include_public_ips: Whether to search in the PublicIPs_s field.
-        include_private_ips: Whether to search in SrcIP_s and DestIP_s fields.
-        flow_type: The FlowType_s value to filter on.
-        sub_type: The SubType_s value to filter on.
-        limit: The maximum number of results to return.
-        custom_table_name: Override the default table name (AzureNetworkAnalytics_CL).
-
-    Returns:
-        The generated KQL query string.
+    Generates a KQL query for NSG flow logs (AzureNetworkAnalytics_CL),
+    optionally filtering by a specific NSG ID and allowing specific time windows.
     """
-    if not include_public_ips and not include_private_ips:
-        raise ValueError("At least one of include_public_ips or include_private_ips must be True")
+    table_name = "AzureNetworkAnalytics_CL" # Common table for NSG Flow Logs v2 with Traffic Analytics
 
-    end_time = datetime.now(timezone.utc)
-    start_time = end_time - timedelta(hours=time_range_hours)
+    # Determine time range
+    if start_time_dt is None or end_time_dt is None:
+        # Default to time_range_hours if specific datetimes are not provided
+        end_time = datetime.now(timezone.utc)
+        start_time = end_time - timedelta(hours=time_range_hours)
+    else:
+        start_time = start_time_dt
+        end_time = end_time_dt
+
+    # Format times for KQL
     start_time_str = start_time.strftime('%Y-%m-%dT%H:%M:%SZ')
     end_time_str = end_time.strftime('%Y-%m-%dT%H:%M:%SZ')
 
-    table_name = custom_table_name if custom_table_name else "AzureNetworkAnalytics_CL"
+    # Build the query parts (Reordered based on feedback)
+    query_parts = [
+        table_name,
+        f"| where TimeGenerated between (datetime('{start_time_str}') .. datetime('{end_time_str}'))", # 1. Time filter
+        f'| where FlowStatus_s == "A"', # 2. Status filter (like successful query)
+        f'| where SrcIP_s == "{target_ip}" or DestIP_s == "{target_ip}"' # 3. IP filter
+    ]
 
-    ip_conditions = []
-    if include_public_ips:
-        ip_conditions.append(f'PublicIPs_s contains "{target_ip}"')
-    if include_private_ips:
-        ip_conditions.append(f'SrcIP_s == "{target_ip}"')
-        ip_conditions.append(f'DestIP_s == "{target_ip}"')
+    # Add NSG filter if provided
+    if nsg_id:
+        # NSGList_s usually contains the NSG name, not the full ID. Extract name.
+        try:
+            nsg_name = nsg_id.split('/')[-1]
+            query_parts.append(f'| where NSGList_s contains "{nsg_name}"') # 4. NSG filter (Use 'contains' for flexibility)
+        except Exception:
+             print_warning(f"Could not extract NSG name from ID '{nsg_id}' for query filter.")
 
-    ip_filter = " or ".join(ip_conditions)
 
-    kql = f"""
-{table_name}
-| where TimeGenerated between (datetime({start_time_str}) .. datetime({end_time_str}))
-| where FlowType_s == "{flow_type}"
-| where SubType_s == "{sub_type}"
-| where {ip_filter}
-| project TimeGenerated, FlowStartTime=FlowStartTime_t, FlowEndTime=FlowEndTime_t, NSGName=NSGName_s, NSGRule=NSGRuleName_s, SrcIP=SrcIP_s, DestIP=DestIP_s, SrcPort=SrcPort_d, DestPort=DestPort_d, Protocol=L4Protocol_s, Direction=FlowDirection_s, Action=AllowedOrDenied_s, PublicIPs=PublicIPs_s, VMIP=VMIP_s, SubscriptionId=SubscriptionId_g, ResourceGroup=ResourceGroup_s, VMName=VMName_s, NIC=NicName_s, Subnet=SubnetName_s, VNet=VnetName_s
-| order by TimeGenerated desc
-| limit {limit}
-"""
-    return kql.strip()
+    # Add projection and ordering (matching user requested order)
+    query_parts.extend([
+        "| project TimeGenerated, FlowDirection_s, SrcIP_s, DestIP_s, PublicIPs_s, DestPort_d, FlowStatus_s, L7Protocol_s, InboundBytes_d, OutboundBytes_d, NSGList_s", # Added PublicIPs_s
+        "| order by TimeGenerated desc"
+    ])
+
+    # Join parts into a single query string
+    full_query = "\n".join(query_parts)
+    return full_query.strip()
 
 
 def analyze_traffic(target_ip: str, time_range_hours: int = 24, logger: Optional[logging.Logger] = None) -> Dict[str, Any]:
     """
-    Main analysis function: Finds NSGs, gets configs, queries logs.
-
-    Args:
-        target_ip: The IP address to analyze.
-        time_range_hours: The lookback period for KQL queries in hours.
-        logger: Optional logger instance.
-
-    Returns:
-        A dictionary containing analysis results (NSG IDs, configs, workspace map, query status).
+    Main analysis function: Finds NSGs, gets configs, generates and executes KQL queries.
     """
-    if not logger:
-        # Setup default logger if none provided
-        output_dir = "output"
-        log_dir = os.path.join(output_dir, "logs")
-        log_file_name = f"analysis_log_{target_ip.replace('.', '_')}_{datetime.now().strftime('%Y%m%d')}.log"
-        log_file_path = os.path.join(log_dir, log_file_name)
+    # --- Fixed internal parameters (previously command-line args) ---
+    filter_by_nsg: bool = True       # Always filter KQL by specific NSG
+    execute_query: bool = True       # Always execute KQL queries
+    timeout_seconds: int = 180       # Default timeout for KQL execution
+    query_batch_hours: Optional[int] = None # Disable query batching by default
+    # --- End of Fixed internal parameters ---
+
+    # Use provided logger or setup a default one if not passed (though main should pass it)
+    if logger is None:
+        log_file_name = f"analyze_traffic_log_{target_ip.replace('.', '_')}_{datetime.now().strftime('%Y%m%d')}.log"
+        log_file_path = os.path.join("output", "logs", log_file_name)
         logger = setup_logger(log_file_path)
-        logger.info("Default logger initialized for analyze_traffic.")
+        logger.warning("Logger not passed to analyze_traffic, using default.")
 
-    logger.info(f"--- Starting Traffic Analysis for IP: {target_ip} ---")
-    logger.info(f"Time Range (Hours): {time_range_hours}")
-
-    analysis_results = {
+    logger.info(f"\n===== Starting Traffic Analysis for IP: {target_ip} =====")
+    analysis_summary = {
         "target_ip": target_ip,
         "time_range_hours": time_range_hours,
-        "found_nsg_ids": [],
+        "filter_by_nsg": filter_by_nsg,
+        "execute_query": execute_query,
+        "query_batch_hours": query_batch_hours,
+        "nsgs_found": [],
         "flow_logs_config": {},
-        "workspace_ids_map": {},
-        "kql_query_status": {}, # Tracks success/failure per NSG/workspace
-        "summary": [] # List of summary messages
+        "workspaces_queried": {}, # workspace_id: [nsg_ids]
+        "query_results": {}, # nsg_id: {"status": "...", "total_records": ..., "batches_failed": ..., "last_error": "..."}
+        "errors": []
     }
+
+    # Phase 1: Find NSGs related to the IP
+    logger.info("\n===== Phase 1: Finding related NSGs =====")
+    nsg_ids = find_nsgs_by_ip(target_ip)
+    analysis_summary["nsgs_found"] = nsg_ids
+    if not nsg_ids:
+        logger.warning("No NSGs found. Analysis cannot proceed further for KQL queries.")
+        return analysis_summary # Return early if no NSGs
+
+    # Phase 2: Get Flow Log Configuration for found NSGs
+    logger.info("\n===== Phase 2: Getting Flow Log Configurations =====")
+    flow_logs_config = get_nsg_flow_logs_config(nsg_ids, target_ip)
+    analysis_summary["flow_logs_config"] = flow_logs_config
+    if not flow_logs_config:
+        logger.warning("No flow log configurations found for the NSGs. Cannot determine workspaces.")
+        # We might still have NSG info, but can't query logs
+        return analysis_summary
+
+    # Phase 3: Identify Log Analytics Workspaces
+    logger.info("\n===== Phase 3: Identifying Log Analytics Workspaces =====")
+    workspace_map = get_log_analytics_workspaces(flow_logs_config, target_ip) # Map NSG ID -> Workspace ID
+    if not workspace_map:
+        logger.warning("No Log Analytics workspaces identified from flow log configs. Cannot execute KQL queries.")
+        return analysis_summary
+
+    # Group NSGs by Workspace ID for efficient querying
+    workspaces_to_query = {} # workspace_id: [nsg_ids]
+    for nsg_id, ws_id in workspace_map.items():
+        if ws_id not in workspaces_to_query:
+            workspaces_to_query[ws_id] = []
+        workspaces_to_query[ws_id].append(nsg_id)
+    analysis_summary["workspaces_queried"] = workspaces_to_query
+
+    # Phase 4: Generate and Execute KQL Queries (if requested)
+    logger.info("\n===== Phase 4: Generating and Executing KQL Queries =====")
+    if not execute_query:
+        logger.warning("Query execution skipped as per '--no-execute' flag.")
+        # Generate sample queries for user reference
+        for workspace_id, nsg_list in workspaces_to_query.items():
+            # Generate query for the first NSG in the list for this workspace as an example
+            example_nsg_id = nsg_list[0]
+            kql_query = generate_kql_query(
+                target_ip=target_ip,
+                time_range_hours=time_range_hours, # Use full range for sample
+                nsg_id=example_nsg_id if filter_by_nsg else None
+            )
+            logger.info(f"\nSample KQL Query for Workspace {workspace_id.split('/')[-1]} (NSG: {example_nsg_id.split('/')[-1]}):")
+            print_info(f"\nSample KQL Query for Workspace {workspace_id.split('/')[-1]} (NSG: {example_nsg_id.split('/')[-1]}):")
+            print(kql_query)
+            # Save sample query
+            query_file = os.path.join("output", f"sample_query_{target_ip}_{example_nsg_id.split('/')[-1]}.kql")
+            try:
+                with open(query_file, 'w', encoding='utf-8') as f: f.write(kql_query)
+                logger.info(f"Sample query saved to {query_file}")
+                print_info(f"Sample query saved to {query_file}")
+            except IOError as e:
+                logger.warning(f"Could not save sample query: {e}")
+                print_warning(f"Could not save sample query: {e}")
+
+        return analysis_summary
+
+    # Execute queries
+    logger.info("Executing KQL queries...")
+    all_results_df = [] # List to hold DataFrames from successful queries
+    query_execution_errors = 0 # Counter for failed queries
+
+    # Determine overall time range
+    overall_end_time = datetime.now(timezone.utc)
+    overall_start_time = overall_end_time - timedelta(hours=time_range_hours)
+
+    for workspace_id, nsg_list in workspaces_to_query.items():
+        ws_short_id = workspace_id.split('/')[-1]
+        logger.info(f"\n--- Querying Workspace: {ws_short_id} ---")
+        for nsg_id in nsg_list:
+            nsg_name = nsg_id.split('/')[-1]
+            logger.info(f"--- Processing NSG: {nsg_name} ---")
+            # Initialize result status for this NSG
+            analysis_summary["query_results"][nsg_id] = {"status": "pending", "total_records": 0, "batches_failed": 0}
+
+
+            # Determine if batching is needed
+            batch_intervals = []
+            if query_batch_hours and query_batch_hours > 0 and time_range_hours > query_batch_hours:
+                logger.info(f"Batching enabled: Querying in {query_batch_hours}-hour intervals.")
+                current_start_time = overall_start_time
+                while current_start_time < overall_end_time:
+                    current_end_time = min(current_start_time + timedelta(hours=query_batch_hours), overall_end_time)
+                    # Ensure start time is strictly less than end time
+                    if current_start_time < current_end_time:
+                         batch_intervals.append((current_start_time, current_end_time))
+                    current_start_time = current_end_time
+            else:
+                # No batching, use the overall time range
+                batch_intervals.append((overall_start_time, overall_end_time))
+                if query_batch_hours:
+                     logger.info(f"Batching interval ({query_batch_hours}h) >= total time range ({time_range_hours}h). Executing as single query.")
+
+
+            logger.info(f"Total query intervals for NSG '{nsg_name}': {len(batch_intervals)}")
+
+            # Execute query for each interval (batch or single)
+            nsg_total_records = 0
+            nsg_batches_failed = 0
+            for i, (start_dt, end_dt) in enumerate(batch_intervals):
+                interval_label = f"Interval {i+1}/{len(batch_intervals)}" if len(batch_intervals) > 1 else "Full Range"
+                start_str = start_dt.strftime('%Y-%m-%d %H:%M:%S UTC')
+                end_str = end_dt.strftime('%Y-%m-%d %H:%M:%S UTC')
+                logger.info(f"Executing query for {interval_label}: {start_str} to {end_str}")
+
+                kql_query = generate_kql_query(
+                    target_ip=target_ip,
+                    nsg_id=nsg_id if filter_by_nsg else None,
+                    start_time_dt=start_dt,
+                    end_time_dt=end_dt
+                )
+
+                # Execute the query for this batch/interval
+                query_results = execute_kql_query(workspace_id, kql_query, target_ip, nsg_id, timeout_seconds)
+
+                # Process and store results/errors for this batch
+                if query_results and isinstance(query_results.get('tables'), list) and len(query_results['tables']) > 0:
+                    table = query_results['tables'][0]
+                    record_count = len(table.get('rows', []))
+                    nsg_total_records += record_count
+                    logger.info(f"Batch {interval_label} for NSG '{nsg_name}' returned {record_count} records.")
+                    # Convert successful results to DataFrame for later merging
+                    if record_count > 0:
+                        try:
+                            columns = [col['name'] for col in table['columns']]
+                            df = pd.DataFrame(table['rows'], columns=columns)
+                            # Add batch info for potential debugging/analysis
+                            df['query_batch_start'] = start_dt
+                            df['query_batch_end'] = end_dt
+                            all_results_df.append(df)
+                        except Exception as e:
+                             logger.error(f"Error converting results to DataFrame for NSG {nsg_name} ({interval_label}): {e}")
+                             analysis_summary["errors"].append(f"DataFrame conversion failed for NSG {nsg_name} ({interval_label}): {e}")
+                             # Consider this batch as failed for status reporting
+                             nsg_batches_failed += 1
+                             query_execution_errors += 1
+
+
+                elif query_results is not None: # Query ran but returned no data or unexpected structure
+                     logger.info(f"Batch {interval_label} for NSG '{nsg_name}' returned no data.")
+                     # Still considered a successful execution for this batch
+                else: # execute_kql_query returned None (error for this batch)
+                     query_execution_errors += 1
+                     nsg_batches_failed += 1
+                     error_message = f"Query execution failed for NSG '{nsg_name}' ({interval_label}). See logs."
+                     analysis_summary["errors"].append(f"KQL query failed for NSG {nsg_name} ({interval_label}) in workspace {ws_short_id}")
+                     logger.error(error_message) # Log error
+
+            # Update final status for this NSG based on batch results
+            if nsg_batches_failed == len(batch_intervals): # All batches failed
+                 analysis_summary["query_results"][nsg_id]["status"] = "error"
+                 analysis_summary["query_results"][nsg_id]["last_error"] = "All query batches failed."
+            elif nsg_batches_failed > 0: # Some batches failed
+                 analysis_summary["query_results"][nsg_id]["status"] = "partial_success"
+                 analysis_summary["query_results"][nsg_id]["last_error"] = f"{nsg_batches_failed} query batch(es) failed."
+            else: # All batches succeeded (even if some returned no data)
+                 analysis_summary["query_results"][nsg_id]["status"] = "success"
+            analysis_summary["query_results"][nsg_id]["total_records"] = nsg_total_records
+            analysis_summary["query_results"][nsg_id]["batches_failed"] = nsg_batches_failed
+
+
+    # Phase 5: Consolidate and Save All Results to a Single Excel File
+    logger.info("\n===== Phase 5: Consolidating Results =====")
+    if all_results_df:
+        try:
+            logger.info(f"Consolidating results from {len(all_results_df)} successful batches/queries...")
+            consolidated_df = pd.concat(all_results_df, ignore_index=True)
+            # Optional: Drop duplicates if the same flow might be logged under multiple NSGs queried
+            # consolidated_df.drop_duplicates(inplace=True)
+            logger.info(f"Total consolidated records: {len(consolidated_df)}")
+
+            # --- Fix for Excel Column Order ---
+            desired_order = [ # Added PublicIPs_s here
+                'TimeGenerated', 'FlowDirection_s', 'SrcIP_s', 'DestIP_s', 'PublicIPs_s', 'DestPort_d',
+                'FlowStatus_s', 'L7Protocol_s', 'InboundBytes_d', 'OutboundBytes_d','NSGList_s'
+            ]
+            # Add batch columns if they exist in the DataFrame
+            if 'query_batch_start' in consolidated_df.columns:
+                desired_order.append('query_batch_start')
+            if 'query_batch_end' in consolidated_df.columns:
+                desired_order.append('query_batch_end')
+
+            # Get existing columns and create the final order, putting desired first
+            existing_columns = consolidated_df.columns.tolist()
+            # Start with columns in desired order that actually exist
+            final_columns = [col for col in desired_order if col in existing_columns]
+            # Add any other existing columns not in the desired list
+            final_columns.extend([col for col in existing_columns if col not in final_columns])
+
+            logger.info(f"Reordering columns for Excel export: {final_columns}")
+            # Apply the reordering directly to consolidated_df before copying
+            consolidated_df = consolidated_df[final_columns]
+
+
+            # Save consolidated results
+            consolidated_excel_path = os.path.join("output", f"consolidated_results_{target_ip.replace('.', '_')}_{datetime.now().strftime('%Y%m%d%H%M%S')}.xlsx")
+            try:
+                 import openpyxl # Ensure engine is available
+
+                 # --- Fix for Timezone Error ---
+                 # Convert timezone-aware columns to timezone-naive UTC before writing to Excel
+                 logger.info("Preparing DataFrame for Excel export (converting timezones)...")
+                 df_to_export = consolidated_df.copy() # Now copy the reordered df
+                 for col in df_to_export.columns:
+                     # Check if column is datetime type and timezone-aware
+                     if pd.api.types.is_datetime64_any_dtype(df_to_export[col]) and df_to_export[col].dt.tz is not None:
+                         logger.info(f"Converting column '{col}' to timezone-naive UTC.")
+                         try:
+                             df_to_export[col] = df_to_export[col].dt.tz_convert('UTC').dt.tz_localize(None)
+                         except Exception as tz_err:
+                              logger.warning(f"Could not convert timezone for column '{col}': {tz_err}")
+                              # Optionally convert to string as fallback? Or leave as is and let Excel handle it potentially incorrectly.
+                              # df_to_export[col] = df_to_export[col].astype(str)
+
+                 logger.info("Writing consolidated data to Excel...")
+                 df_to_export.to_excel(consolidated_excel_path, index=False, engine='openpyxl') # Write the timezone-fixed df
+                 print_success(f"Consolidated results saved to: {consolidated_excel_path}")
+                 analysis_summary["consolidated_results_file"] = consolidated_excel_path
+            except ImportError:
+                 # Logger might not be available if setup failed earlier, use print_error
+                 logger.error("Module 'openpyxl' not found. Cannot save consolidated Excel. Run: pip install openpyxl")
+                 print_error("Module 'openpyxl' not found. Cannot save consolidated Excel.")
+                 analysis_summary["errors"].append("Consolidated Excel saving failed: openpyxl not found.")
+            except Exception as e:
+                 # Logger might not be available if setup failed earlier, use print_error
+                 logger.error(f"Error saving consolidated Excel file: {e}")
+                 print_error(f"Error saving consolidated Excel file: {e}")
+                 analysis_summary["errors"].append(f"Consolidated Excel saving failed: {e}")
+
+        except Exception as e:
+            logger.error(f"Error consolidating DataFrames: {e}")
+            analysis_summary["errors"].append(f"Result consolidation failed: {e}")
+    elif execute_query and query_execution_errors == 0:
+         logger.info("All queries executed successfully, but no records were found to consolidate.")
+    elif execute_query:
+         logger.warning("No successful query results with data found to consolidate, possibly due to query errors.")
+
+
+    logger.info("\n===== Analysis Complete =====")
+    # Save final summary
+    save_json(analysis_summary, os.path.join("output", f"analysis_summary_{target_ip.replace('.', '_')}.json"))
+
+    return analysis_summary
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Find Azure NSGs associated with an IP and query NSG flow logs.")
+    parser.add_argument("ip_address", help="The target IP address to analyze.")
+    parser.add_argument("--time-range", type=int, default=24, help="Time range in hours for KQL query (default: 24)")
+    # Removed arguments: --filter-nsg, --execute, --timeout, --batch-hours
+    # These are now handled internally within the analyze_traffic function.
+    args = parser.parse_args()
+
+    # --- Logger Setup for main function ---
+    output_dir = "output" # Define output dir for logger path
+    log_dir = os.path.join(output_dir, "logs")
+    # Use a generic name for the main log, or one based on the script itself
+    main_log_file_name = f"script_execution_{datetime.now().strftime('%Y%m%d')}.log"
+    main_log_file_path = os.path.join(log_dir, main_log_file_name)
+    # Initialize logger here so it's available throughout main
+    logger = setup_logger(main_log_file_path)
+    logger.info(f"--- Script execution started for IP: {args.ip_address} ---")
+
 
     # Validate IP address format
     try:
-        ipaddress.ip_address(target_ip)
-        logger.info(f"Target IP {target_ip} format is valid.")
+        ipaddress.ip_address(args.ip_address)
     except ValueError:
-        error_msg = f"Invalid IP address format: {target_ip}"
-        print_error(error_msg)
-        logger.error(error_msg)
-        analysis_results["summary"].append(error_msg)
-        return analysis_results # Exit early if IP is invalid
+        logger.error(f"Invalid IP address format provided: {args.ip_address}") # Use logger
+        print_error(f"Invalid IP address format: {args.ip_address}")
+        sys.exit(1)
 
-    # Step 1 & 2: Find NSGs associated with the IP
+    # Ensure user is logged into Azure CLI
     try:
-        nsg_ids = find_nsgs_by_ip(target_ip)
-        analysis_results["found_nsg_ids"] = nsg_ids
-        if not nsg_ids:
-            warning_msg = f"No NSGs found associated with IP {target_ip}. Analysis cannot proceed further."
-            print_warning(warning_msg)
-            logger.warning(warning_msg)
-            analysis_results["summary"].append(warning_msg)
-            return analysis_results
-        else:
-            success_msg = f"Successfully found {len(nsg_ids)} potential NSG(s) related to IP {target_ip}."
-            logger.info(success_msg)
-            analysis_results["summary"].append(success_msg)
-
-    except Exception as e:
-        error_msg = f"Error during NSG discovery for IP {target_ip}: {e}"
-        print_error(error_msg)
-        logger.exception(error_msg) # Log full traceback
-        analysis_results["summary"].append(error_msg)
-        return analysis_results # Stop if NSG discovery fails
-
-    # Step 3 & 4: Get Flow Logs config and Workspace IDs
-    try:
-        flow_logs_config = get_nsg_flow_logs_config(nsg_ids, target_ip)
-        analysis_results["flow_logs_config"] = flow_logs_config
-
-        if not flow_logs_config:
-             warning_msg = f"No flow log configurations found for the identified NSGs. Cannot query logs."
-             print_warning(warning_msg)
-             logger.warning(warning_msg)
-             analysis_results["summary"].append(warning_msg)
-             return analysis_results
-        else:
-            logger.info(f"Retrieved flow log configurations for {len(flow_logs_config)} NSG(s).")
-
-        workspace_ids_map = get_log_analytics_workspaces(flow_logs_config, target_ip)
-        analysis_results["workspace_ids_map"] = workspace_ids_map
-
-        if not workspace_ids_map:
-            warning_msg = f"No Log Analytics Workspaces identified from flow log configurations. Cannot query logs."
-            print_warning(warning_msg)
-            logger.warning(warning_msg)
-            analysis_results["summary"].append(warning_msg)
-            return analysis_results
-        else:
-             success_msg = f"Identified {len(workspace_ids_map)} Log Analytics Workspace(s) to query."
-             logger.info(success_msg)
-             analysis_results["summary"].append(success_msg)
-
-    except Exception as e:
-        error_msg = f"Error getting flow log/workspace info for IP {target_ip}: {e}"
-        print_error(error_msg)
-        logger.exception(error_msg)
-        analysis_results["summary"].append(error_msg)
-        return analysis_results # Stop if config retrieval fails
-
-    # Step 5: Execute KQL Queries for each workspace
-    print_info(f"\nStep 6: Executing KQL queries for IP {target_ip} across identified workspaces...")
-    logger.info("--- Starting KQL Query Phase ---")
-
-    queried_workspaces = set() # Keep track of workspaces already queried to avoid duplicates
-
-    for nsg_id, workspace_id in workspace_ids_map.items():
-        nsg_name = nsg_id.split('/')[-1] # For logging/reporting
-        query_key = f"{nsg_id} -> {workspace_id}" # Unique key for status
-
-        # Skip if workspace ID is invalid or already queried for this analysis run
-        if not workspace_id or workspace_id in queried_workspaces:
-            if not workspace_id:
-                 logger.warning(f"Skipping KQL query for NSG '{nsg_name}' due to missing workspace ID.")
-            else:
-                 logger.info(f"Workspace {workspace_id} already queried for NSG '{nsg_name}' in this run. Skipping duplicate query.")
-            analysis_results["kql_query_status"][query_key] = "Skipped (Missing ID or Duplicate)"
-            continue
-
-        logger.info(f"Preparing KQL query for NSG '{nsg_name}' against Workspace ID: {workspace_id}")
-
-        # Generate the KQL query
-        # You can choose between generate_simple_kql_query or the more flexible generate_kql_query
-        # kql_query = generate_simple_kql_query(target_ip, time_range_hours)
-        kql_query = generate_kql_query(
-            target_ip=target_ip,
-            time_range_hours=time_range_hours,
-            limit=2000 # Increase limit slightly if needed
-        )
-        logger.debug(f"Generated KQL for NSG '{nsg_name}':\n{kql_query}")
-
-        # Execute the query
-        try:
-            query_result = execute_kql_query(workspace_id, kql_query, target_ip, nsg_id) # Pass logger
-
-            if query_result is not None:
-                # Check if data was actually returned
-                data_returned = False
-                if query_result.get("tables") and len(query_result["tables"]) > 0:
-                     if query_result["tables"][0].get("rows") and len(query_result["tables"][0]["rows"]) > 0:
-                         data_returned = True
-
-                if data_returned:
-                    status_msg = f"Success (Data Found)"
-                    logger.info(f"KQL query successful for NSG '{nsg_name}', data found.")
-                else:
-                    status_msg = f"Success (No Data)"
-                    logger.info(f"KQL query successful for NSG '{nsg_name}', but no matching data returned.")
-
-                analysis_results["kql_query_status"][query_key] = status_msg
-                queried_workspaces.add(workspace_id) # Mark workspace as queried
-
-            else:
-                # execute_kql_query handles logging/printing errors internally
-                analysis_results["kql_query_status"][query_key] = "Failed"
-                logger.error(f"KQL query failed for NSG '{nsg_name}' against workspace {workspace_id}.")
-                # Optionally add a summary message about the failure
-                analysis_results["summary"].append(f"KQL query failed for NSG '{nsg_name}'. Check logs.")
+        logger.info("Checking Azure CLI login status...")
+        print_info("Checking Azure CLI login status...")
+        # Use a less verbose command for checking login status if possible, but `az account show` is standard
+        subprocess.run("az account show", shell=True, check=True, capture_output=True, text=True, encoding='utf-8')
+        logger.info("Azure CLI login verified.")
+        print_success("Azure CLI login verified.")
+    except subprocess.CalledProcessError:
+        logger.error("Azure CLI login required. Please run 'az login'.") # Use logger
+        print_error("Azure CLI login required. Please run 'az login' and try again.")
+        sys.exit(1)
+    except FileNotFoundError:
+         logger.error("Azure CLI ('az') command not found.") # Use logger
+         print_error("Azure CLI ('az') command not found. Please ensure it's installed and in your PATH.")
+         sys.exit(1)
 
 
-        except Exception as e:
-            error_msg = f"Unexpected error during KQL execution for NSG '{nsg_name}': {e}"
-            print_error(error_msg)
-            logger.exception(error_msg)
-            analysis_results["kql_query_status"][query_key] = f"Error: {e}"
-            analysis_results["summary"].append(error_msg)
+    # Run the analysis, passing the logger instance
+    analysis_results = analyze_traffic(
+        target_ip=args.ip_address,
+        time_range_hours=args.time_range,
+        # Removed arguments: filter_by_nsg, execute_query, timeout_seconds, query_batch_hours
+        logger=logger # Pass logger to the function
+    )
 
-    logger.info("--- Finished KQL Query Phase ---")
+    # Print summary information from results
+    print("\n--- Analysis Summary ---")
+    logger.info("--- Analysis Summary ---")
+    print(f"Target IP: {analysis_results['target_ip']}")
+    logger.info(f"Target IP: {analysis_results['target_ip']}")
+    print(f"NSGs Found: {len(analysis_results['nsgs_found'])}")
+    logger.info(f"NSGs Found: {len(analysis_results['nsgs_found'])}")
+    print(f"Workspaces Queried: {len(analysis_results['workspaces_queried'])}")
+    logger.info(f"Workspaces Queried: {len(analysis_results['workspaces_queried'])}")
 
-    # Final Summary
-    print_info("\n--- Analysis Summary ---")
-    print(f"Target IP: {target_ip}")
-    print(f"Time Range (Hours): {time_range_hours}")
-    print(f"Found NSGs: {len(analysis_results['found_nsg_ids'])}")
-    print(f"Flow Log Configs Found: {len(analysis_results['flow_logs_config'])}")
-    print(f"Workspaces Queried: {len(queried_workspaces)}")
-    print("KQL Query Status:")
-    for key, status in analysis_results['kql_query_status'].items():
-        nsg_part = key.split(' -> ')[0].split('/')[-1]
-        ws_part = key.split(' -> ')[1].split('/')[-1] # Show short workspace ID
-        print(f"  - NSG: {nsg_part}, Workspace: {ws_part}: {status}")
-
-    # Save the overall analysis results summary
-    summary_file = os.path.join("output", f"analysis_summary_{target_ip}.json")
-    save_json(analysis_results, summary_file)
-    logger.info(f"Analysis summary saved to {summary_file}")
-
-    logger.info(f"--- Finished Traffic Analysis for IP: {target_ip} ---")
-    return analysis_results
-
-def main():
-    parser = argparse.ArgumentParser(description="Find Azure NSGs associated with an IP and query flow logs.")
-    parser.add_argument("ip_address", help="The target IP address to analyze.")
-    parser.add_argument("-t", "--time-range", type=int, default=24,
-                        help="Time range in hours to query flow logs (default: 24).")
-    parser.add_argument("--timeout", type=int, default=300,
-                        help="Timeout in seconds for KQL queries (default: 300).") # Added timeout argument
-
-    # Add arguments for KQL query generation flexibility (optional)
-    parser.add_argument("--kql-no-public", action="store_false", dest="include_public",
-                        help="Do not search in PublicIPs_s field in KQL.")
-    parser.add_argument("--kql-no-private", action="store_false", dest="include_private",
-                        help="Do not search in SrcIP_s/DestIP_s fields in KQL.")
-    parser.add_argument("--kql-limit", type=int, default=2000,
-                        help="Limit the number of results from KQL query (default: 2000).")
-    parser.add_argument("--kql-table", type=str, default=None,
-                        help="Specify a custom table name for KQL query (default: AzureNetworkAnalytics_CL).")
+    # Summarize query results status
+    success_count = sum(1 for res in analysis_results['query_results'].values() if res['status'] == 'success')
+    partial_count = sum(1 for res in analysis_results['query_results'].values() if res['status'] == 'partial_success')
+    error_count = sum(1 for res in analysis_results['query_results'].values() if res['status'] == 'error')
+    print(f"Query Status (by NSG): Success={success_count}, Partial Success={partial_count}, Error={error_count}")
+    logger.info(f"Query Status (by NSG): Success={success_count}, Partial Success={partial_count}, Error={error_count}")
 
 
-    args = parser.parse_args()
-
-    # --- Setup Central Logger ---
-    output_dir = "output"
-    log_dir = os.path.join(output_dir, "logs")
-    # Main log file for the overall script execution
-    main_log_file_name = f"main_script_log_{args.ip_address.replace('.', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-    main_log_file_path = os.path.join(log_dir, main_log_file_name)
-    # Use a distinct name for the main logger
-    main_logger = setup_logger(main_log_file_path)
-    main_logger.info(f"--- Script Started: {sys.argv[0]} ---")
-    main_logger.info(f"Arguments: IP={args.ip_address}, TimeRange={args.time_range}, Timeout={args.timeout}")
-    main_logger.info(f"KQL Options: Public={args.include_public}, Private={args.include_private}, Limit={args.kql_limit}, Table={args.kql_table}")
+    if analysis_results.get('consolidated_results_file'):
+        print(f"Consolidated Excel Report: {analysis_results['consolidated_results_file']}")
+        logger.info(f"Consolidated Excel Report: {analysis_results['consolidated_results_file']}")
+    # Check if queries were executed, no errors occurred, and no records found
+    elif analysis_results['execute_query'] and not analysis_results['errors'] and not any(res.get('total_records', 0) > 0 for res in analysis_results['query_results'].values() if res.get('status') != 'error'):
+         no_records_msg = "Analysis completed, but no flow log records were found for the specified IP and time range across all queried NSGs."
+         print(no_records_msg)
+         logger.info(no_records_msg)
 
 
-    # --- Execute Analysis ---
-    try:
-        # Pass the main logger to the analysis function
-        analysis_summary = analyze_traffic(args.ip_address, args.time_range, logger=main_logger)
+    if analysis_results['errors']:
+        print_warning("\nErrors encountered during analysis:")
+        # Print unique errors
+        unique_errors = sorted(list(set(analysis_results['errors'])))
+        for error in unique_errors:
+            print(f"- {error}")
+            logger.warning(f"Analysis Error: {error}") # Log errors as warnings in main log
 
-        # Optional: Print a final confirmation based on summary
-        if analysis_summary and analysis_summary.get("kql_query_status"):
-             print_success("\nAnalysis complete. Check the 'output' directory for detailed JSON/Excel files and logs.")
-             main_logger.info("Analysis completed successfully.")
-        else:
-             print_warning("\nAnalysis finished, but some steps may have encountered issues or returned no data. Check logs and output files.")
-             main_logger.warning("Analysis finished with potential issues or no data.")
-
-    except Exception as e:
-        error_msg = f"An unhandled error occurred in main execution: {e}"
-        print_error(error_msg)
-        main_logger.exception(error_msg) # Log the full traceback for unhandled errors
-        sys.exit(1) # Exit with error code
-    finally:
-        main_logger.info(f"--- Script Finished: {sys.argv[0]} ---")
+    logger.info(f"--- Script execution finished for IP: {args.ip_address} ---")
 
 
 if __name__ == "__main__":
+    # Check for required dependencies first
+    try:
+        import pandas
+        import openpyxl # Check for excel engine too
+    except ImportError as e:
+        # Use basic print here as logger might not be set up yet
+        print(f"{Colors.RED}Missing required Python package: {e.name}. Please install it.{Colors.RESET}")
+        print(f"{Colors.RED}You can likely install required packages using: pip install pandas openpyxl{Colors.RESET}")
+        sys.exit(1)
+
     main()
