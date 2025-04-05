@@ -15,9 +15,13 @@ def bootstrap():
     package_root = os.path.dirname(os.path.abspath(__file__))
     sys.path.insert(0, package_root)
     
-    # Import and run the main function
-    from ip_nsg_finder import main
+    # Import and run the main function - using absolute import
+    # This needs to happen after adding package_root to sys.path
+    from queryreport.ip_nsg_finder import main
     main()
 
 if __name__ == "__main__":
+    # Add parent directory to path to make queryreport a proper package
+    parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    sys.path.insert(0, parent_dir)
     bootstrap()
