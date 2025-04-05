@@ -17,20 +17,22 @@ def generate_simple_kql_query(target_ip: str, time_range_hours: int = 24) -> str
     end_time = datetime.now(timezone.utc)
     start_time = end_time - timedelta(hours=time_range_hours)
     
-    # Format times in ISO format with no microseconds for better compatibility
-    start_time_str = start_time.strftime('%Y-%m-%dT%H:%M:%S.000Z')
-    end_time_str = end_time.strftime('%Y-%m-%dT%H:%M:%S.000Z')
+    # Format times in ISO format for better compatibility
+    start_time_str = start_time.strftime('%Y-%m-%dT%H:%M:%SZ')
+    end_time_str = end_time.strftime('%Y-%m-%dT%H:%M:%SZ')
     
     # Basic query with IP filtering
     query = f"""AzureNetworkAnalytics_CL
-| where TimeGenerated between (datetime({start_time_str}) .. datetime({end_time_str}))
-| where SourceIP_s == "{target_ip}" or DestIP_s == "{target_ip}"
+| where TimeGenerated between (datetime('{start_time_str}') .. datetime('{end_time_str}'))
+| where FlowType_s == "AzureNetworkAnalytics" # Ensure we are looking at flow logs
+| where SrcIP_s == "{target_ip}" or DestIP_s == "{target_ip}"
 | project TimeGenerated, FlowStartTime_t, FlowEndTime_t, FlowType_s, 
-          SourceIP_s, DestIP_s, SourcePort_d, DestPort_d, 
+          SrcIP_s, DestIP_s, SrcPort_d, DestPort_d, 
           L4Protocol_s, L7Protocol_s, FlowDirection_s,
-          NSGRule_s, NSG_s, TenantId, SubscriptionId"""
+          NSGRule_s, NSG_s, TenantId, SubscriptionId
+| order by TimeGenerated desc"""
           
-    return query
+    return query.strip()
 
 def generate_kql_query(target_ip: str,
                        time_range_hours: int = 24, # Keep for default case 
@@ -41,44 +43,48 @@ def generate_kql_query(target_ip: str,
     Generates a KQL query for NSG flow logs (AzureNetworkAnalytics_CL),
     optionally filtering by a specific NSG ID and allowing specific time windows.
     """
-    # If specific time range wasn't provided, calculate based on time_range_hours
-    if end_time_dt is None:
-        end_time_dt = datetime.now(timezone.utc)
+    table_name = "AzureNetworkAnalytics_CL" # Common table for NSG Flow Logs v2 with Traffic Analytics
+
+    # Determine time range
+    if start_time_dt is None or end_time_dt is None:
+        # Default to time_range_hours if specific datetimes are not provided
+        end_time = datetime.now(timezone.utc)
+        start_time = end_time - timedelta(hours=time_range_hours)
+    else:
+        start_time = start_time_dt
+        end_time = end_time_dt
     
-    if start_time_dt is None:
-        start_time_dt = end_time_dt - timedelta(hours=time_range_hours)
+    # Format times for KQL
+    start_time_str = start_time.strftime('%Y-%m-%dT%H:%M:%SZ')
+    end_time_str = end_time.strftime('%Y-%m-%dT%H:%M:%SZ')
     
-    # Format times in ISO format with no microseconds for better compatibility
-    start_time_str = start_time_dt.strftime('%Y-%m-%dT%H:%M:%S.000Z')
-    end_time_str = end_time_dt.strftime('%Y-%m-%dT%H:%M:%S.000Z')
+    # Build the query parts (Reordered based on feedback)
+    query_parts = [
+        table_name,
+        f"| where TimeGenerated between (datetime('{start_time_str}') .. datetime('{end_time_str}'))", # 1. Time filter
+        f'| where FlowStatus_s == "A"', # 2. Status filter (like successful query)
+        f'| where SrcIP_s == "{target_ip}" or DestIP_s == "{target_ip}"' # 3. IP filter
+    ]
     
-    # Extract NSG name from NSG ID (if provided) for filtering
-    nsg_name = None
+    # Add NSG filter if provided
     if nsg_id:
+        # NSGList_s usually contains the NSG name, not the full ID. Extract name.
         try:
-            nsg_name = nsg_id.split('/')[-1] # Extract the NSG name from the resource ID
-        except (IndexError, AttributeError):
-            print_warning(f"Could not extract NSG name from NSG ID: {nsg_id}")
+            nsg_name = nsg_id.split('/')[-1]
+            query_parts.append(f'| where NSGList_s contains "{nsg_name}"') # 4. NSG filter (Use 'contains' for flexibility)
+        except Exception:
+             print_warning(f"Could not extract NSG name from ID '{nsg_id}' for query filter.")
     
-    # Build query with filtering options
-    query = f"""AzureNetworkAnalytics_CL
-| where TimeGenerated between (datetime({start_time_str}) .. datetime({end_time_str}))
-| where SourceIP_s == "{target_ip}" or DestIP_s == "{target_ip}"
-"""
     
-    # Add NSG filtering if NSG name was successfully extracted
-    if nsg_name:
-        query += f'| where NSG_s == "{nsg_name}"\n'
+    # Add projection and ordering (matching user requested order)
+    query_parts.extend([
+        "| project TimeGenerated, FlowDirection_s, SrcIP_s, DestIP_s, PublicIPs_s, DestPort_d, FlowStatus_s, L7Protocol_s, InboundBytes_d, OutboundBytes_d, NSGList_s", # Added PublicIPs_s
+        "| order by TimeGenerated desc"
+    ])
     
-    # Complete the projection 
-    query += """| project TimeGenerated, FlowStartTime_t, FlowEndTime_t, FlowType_s, 
-          SourceIP_s, DestIP_s, SourcePort_d, DestPort_d, 
-          L4Protocol_s, L7Protocol_s, FlowDirection_s,
-          NSGRule_s, NSG_s, TenantId, SubscriptionId
-| order by TimeGenerated asc
-"""
-          
-    return query
+    # Join parts into a single query string
+    full_query = "\n".join(query_parts)
+    return full_query.strip()
 
 def execute_kql_query(workspace_id: str, kql_query: str, target_ip: str, nsg_id: str, timeout_seconds: int = 180) -> Optional[Dict]:
     """Execute a KQL query against a Log Analytics workspace, save results to Excel, and log execution."""
