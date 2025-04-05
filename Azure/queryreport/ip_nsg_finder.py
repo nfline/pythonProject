@@ -354,9 +354,9 @@ def main():
         ColorPrinter.print_error(f"Critical error: {str(e)}")
         sys.exit(1)
 
-# 确保在直接运行脚本时执行main函数，而在作为模块导入时不执行
+# Ensure main function is executed only when script is run directly, not when imported as module
 if __name__ == "__main__":
-    # 添加当前目录到Python路径，确保相对导入能够工作
+    # Add current directory to Python path to ensure relative imports work correctly
     import os
     import sys
     package_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
