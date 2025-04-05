@@ -194,6 +194,25 @@ def execute_kql_query(workspace_id: str, kql_query: str, target_ip: str, nsg_id:
                 try:
                     # Convert to DataFrame
                     df = pd.DataFrame(results)
+                    
+                    # Define expected column order based on KQL query in generate_kql_query
+                    # This ensures the Excel file columns match the order in the query
+                    expected_columns = [
+                        'TimeGenerated', 'FlowDirection_s', 'SrcIP_s', 'DestIP_s', 
+                        'PublicIPs_s', 'DestPort_d', 'FlowStatus_s', 'L7Protocol_s', 
+                        'InboundBytes_d', 'OutboundBytes_d', 'NSGList_s'
+                    ]
+                    
+                    # Reorder columns if they exist in DataFrame
+                    existing_columns = [col for col in expected_columns if col in df.columns]
+                    # Add any columns from DataFrame that weren't in our expected list (if any)
+                    other_columns = [col for col in df.columns if col not in expected_columns]
+                    # Create final ordered column list
+                    ordered_columns = existing_columns + other_columns
+                    
+                    # Reorder the DataFrame columns
+                    df = df[ordered_columns]
+                    
                     excel_file = os.path.join(output_dir, f"query_results_{target_ip}_{nsg_name}_{timestamp}.xlsx")
                     df.to_excel(excel_file, index=False, engine='openpyxl')
                     logger.info(f"Saved query results to Excel: {excel_file}")
