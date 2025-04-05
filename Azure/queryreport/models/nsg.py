@@ -1,5 +1,5 @@
 class NSGAnalyzer:
-    """NSG分析核心类"""
+    """Core NSG Analysis Class"""
     
     def __init__(self, target_ip, logger):
         self.target_ip = target_ip
@@ -7,8 +7,8 @@ class NSGAnalyzer:
         self.nsg_data = []
 
     def find_associated_nsgs(self):
-        """通过Azure Resource Graph查找关联NSG"""
-        self.logger.info("正在查询关联的NSG...")
+        """Find associated NSGs using Azure Resource Graph"""
+        self.logger.info("Querying associated NSGs...")
         query = f"""
         Resources
         | where type =~ 'microsoft.network/networksecuritygroups'
@@ -24,7 +24,7 @@ class NSGAnalyzer:
         return []
 
     def get_discovery_data(self):
-        """获取发现数据"""
+        """Get discovered NSG data"""
         return {
             "total_nsgs": len(self.nsg_data),
             "nsg_list": self.nsg_data

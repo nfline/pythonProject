@@ -24,7 +24,7 @@ import logging
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 
-# 导入模块
+# Import required modules
 import argparse
 import sys
 from .utils.logger import setup_logger, ColorPrinter
@@ -88,9 +88,9 @@ class NSGTrafficAnalyzer:
 
         except ValueError as ve:
             self.logger.error(f"Invalid input: {str(ve)}")
-            ColorPrinter.print_error(f"输入验证失败: {str(ve)}")
+            ColorPrinter.print_error(f"Input validation failed: {str(ve)}")
         except subprocess.CalledProcessError as cpe:
-            self.logger.error(f"AZ命令执行失败: {cpe.stderr}")
+            self.logger.error(f"Azure CLI command failed: {cpe.stderr}")
             ColorPrinter.print_error(f"Azure CLI错误: {cpe.output}")
         except Exception as e:
             self.logger.error(f"未处理异常: {str(e)}", exc_info=True)
@@ -150,13 +150,13 @@ class KQLQueryBuilder:
         return temp_path
 
 def main():
-    """主入口函数"""
+    """Main entry point function"""
     parser = argparse.ArgumentParser(
-        description="通过IP地址查找关联的Azure NSG并分析流量日志",
+        description="Find associated Azure NSGs and analyze traffic logs by IP address",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     
     parser.add_argument("ip_address",
-        help="要分析的目标IP地址（IPv4/IPv6）")
+        help="Target IP address to analyze (IPv4/IPv6)")
     parser.add_argument("--time-range", type=int, default=24,
         help="查询日志的时间范围（小时）")
     parser.add_argument("--verbose", action="store_true",
@@ -182,7 +182,7 @@ def main():
             os.environ['TZ'] = 'UTC'
             time.tzset()
         except ValueError:
-            ColorPrinter.print_error("无效的IP地址格式")
+            ColorPrinter.print_error("Invalid IP address format")
             sys.exit(1)
             
         # 检查Azure CLI登录状态
@@ -193,7 +193,7 @@ def main():
         analyzer.full_analysis(args.time_range)
         
     except KeyboardInterrupt:
-        ColorPrinter.print_warning("用户终止操作")
+        ColorPrinter.print_warning("Operation cancelled by user")
         sys.exit(130)
     except Exception as e:
         ColorPrinter.print_error(f"严重错误: {str(e)}")
