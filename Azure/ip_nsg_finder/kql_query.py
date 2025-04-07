@@ -86,7 +86,8 @@ def generate_kql_query(target_ip: str,
     full_query = "\n".join(query_parts)
     return full_query.strip()
 
-def execute_kql_query(workspace_id: str, kql_query: str, target_ip: str, nsg_id: str, timeout_seconds: int = 180) -> Optional[Dict]:
+def execute_kql_query(workspace_id: str, kql_query: str, target_ip: str, nsg_id: str, 
+                     timeout_seconds: int = 180, subscription_id: Optional[str] = None) -> Optional[Dict]:
     """Execute a KQL query against a Log Analytics workspace, save results to Excel, and log execution."""
 
     # --- Logging Setup ---
@@ -105,6 +106,8 @@ def execute_kql_query(workspace_id: str, kql_query: str, target_ip: str, nsg_id:
     logger.info(f"NSG Name: {nsg_name}")
     logger.info(f"Workspace ID: {workspace_id}")
     logger.info(f"Timeout Seconds: {timeout_seconds}")
+    if subscription_id:
+        logger.info(f"Using Subscription ID: {subscription_id}")
 
     # --- KQL Query Preparation ---
     kql_query = kql_query.strip()
@@ -134,7 +137,10 @@ def execute_kql_query(workspace_id: str, kql_query: str, target_ip: str, nsg_id:
 
     # Construct Azure CLI command
     # Use workspace short ID for the command
-    cmd = f"az monitor log-analytics query --workspace \"{workspace_short_id}\" --analytics-query \"@{temp_query_file}\" -o json"
+    # Add subscription parameter if provided
+    subscription_param = f" --subscription {subscription_id}" if subscription_id else ""
+    cmd = f"az monitor log-analytics query --workspace \"{workspace_short_id}\"{subscription_param} --analytics-query \"@{temp_query_file}\" -o json"
+    
     logger.info(f"Executing Azure CLI command (using temp file): {cmd}")
     print_info(f"Executing KQL query for NSG '{nsg_name}' via Azure CLI (using temp file)...")
 

@@ -4,7 +4,7 @@ Main analysis module that orchestrates the NSG finding and KQL query processes.
 import os
 import logging
 from datetime import datetime
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Tuple
 
 from .common import print_info, print_success, print_warning, print_error, ensure_output_dir
 from .find_nsgs import find_nsgs_by_ip
@@ -34,7 +34,8 @@ def analyze_traffic(target_ip: str, time_range_hours: int = 24, logger: Optional
     
     try:
         # Step 1-2: Find NSGs associated with the IP
-        unique_nsg_ids = find_nsgs_by_ip(target_ip)
+        # Unpack both values: NSG IDs and subscription ID
+        unique_nsg_ids, subscription_id = find_nsgs_by_ip(target_ip)
         
         if not unique_nsg_ids:
             logger.warning(f"No NSGs found for IP: {target_ip}, analysis cannot continue")
@@ -43,8 +44,13 @@ def analyze_traffic(target_ip: str, time_range_hours: int = 24, logger: Optional
             
         logger.info(f"Found {len(unique_nsg_ids)} NSGs to analyze")
         
+        # Log subscription ID if found
+        if subscription_id:
+            logger.info(f"Using subscription ID: {subscription_id} for Azure operations")
+            print_info(f"Using subscription ID: {subscription_id} for Azure operations")
+        
         # Step 4: Get flow logs configuration for the NSGs
-        flow_logs_config = get_nsg_flow_logs_config(unique_nsg_ids, target_ip)
+        flow_logs_config = get_nsg_flow_logs_config(unique_nsg_ids, target_ip, subscription_id)
         
         if not flow_logs_config:
             logger.warning("No flow logs configuration found, analysis cannot continue")
@@ -87,7 +93,8 @@ def analyze_traffic(target_ip: str, time_range_hours: int = 24, logger: Optional
                 kql_query=kql_query,
                 target_ip=target_ip,
                 nsg_id=nsg_id,
-                timeout_seconds=300  # 5 minutes timeout
+                timeout_seconds=300,  # 5 minutes timeout
+                subscription_id=subscription_id  # Pass subscription ID to query execution
             )
             
             if results:

@@ -12,7 +12,7 @@ from .common import (
     run_command, save_json, ensure_output_dir
 )
 
-def get_nsg_flow_logs_config(nsg_ids: List[str], target_ip: str) -> Dict[str, Dict]:
+def get_nsg_flow_logs_config(nsg_ids: List[str], target_ip: str, subscription_id: Optional[str] = None) -> Dict[str, Dict]:
     """Get flow logs configuration for NSGs"""
     print_info("\nStep 4: Getting NSG flow logs configuration...")
     output_dir = ensure_output_dir()
@@ -41,8 +41,10 @@ def get_nsg_flow_logs_config(nsg_ids: List[str], target_ip: str) -> Dict[str, Di
         print_info(f"Getting flow logs configuration for NSG '{nsg_name}'...")
 
         # Use Resource Graph to query for flow logs targeting this NSG
+        # Add subscription parameter if subscription_id was found
+        subscription_param = f" --subscription {subscription_id}" if subscription_id else ""
         # Query includes workspace ID directly if available
-        flow_logs_cmd = f"az graph query -q \"Resources | where type =~ 'Microsoft.Network/networkWatchers/flowLogs' | where properties.targetResourceId =~ '{nsg_id}' | project id, name, resourceGroup, flowLogResourceId=id, workspaceId=properties.flowAnalyticsConfiguration.networkWatcherFlowAnalyticsConfiguration.workspaceId, enabled=properties.enabled, retentionDays=properties.retentionPolicy.days\" --query \"data\" -o json"
+        flow_logs_cmd = f"az graph query -q \"Resources | where type =~ 'Microsoft.Network/networkWatchers/flowLogs' | where properties.targetResourceId =~ '{nsg_id}' | project id, name, resourceGroup, flowLogResourceId=id, workspaceId=properties.flowAnalyticsConfiguration.networkWatcherFlowAnalyticsConfiguration.workspaceId, enabled=properties.enabled, retentionDays=properties.retentionPolicy.days\"{subscription_param} --query \"data\" -o json"
 
         flow_logs_list = run_command(flow_logs_cmd)
 

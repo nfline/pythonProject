@@ -5,28 +5,34 @@ Includes steps 1-2 from the original script:
 2. Get NSGs associated with the subnets found via NICs
 """
 import os
-from typing import List, Dict, Set, Any, Optional
+from typing import List, Dict, Set, Any, Optional, Tuple
 
 from .common import (
     print_info, print_success, print_warning, 
     run_command, save_json, ensure_output_dir
 )
 
-def find_nsgs_by_ip(target_ip: str) -> List[str]:
+def find_nsgs_by_ip(target_ip: str) -> Tuple[List[str], str]:
     """Find list of NSG IDs associated with an IP"""
     print_info(f"\nFinding NSGs associated with IP {target_ip}...")
     nsg_ids = []
     output_dir = ensure_output_dir()
+    subscription_id = None
 
     # 1. Find network interfaces directly using this IP
     print_info("\nStep 1: Finding network interfaces directly using this IP...")
     # Use Azure Resource Graph query for efficiency
-    nic_cmd = f"az graph query -q \"Resources | where type =~ 'microsoft.network/networkinterfaces' | where properties.ipConfigurations contains '{target_ip}' | project id, name, resourceGroup, subnetId = tostring(properties.ipConfigurations[0].properties.subnet.id), nsgId = tostring(properties.networkSecurityGroup.id)\" --query \"data\" -o json"
+    nic_cmd = f"az graph query -q \"Resources | where type =~ 'microsoft.network/networkinterfaces' | where properties.ipConfigurations contains '{target_ip}' | project id, name, resourceGroup, subscriptionId, subnetId = tostring(properties.ipConfigurations[0].properties.subnet.id), nsgId = tostring(properties.networkSecurityGroup.id)\" --query \"data\" -o json"
 
     nics = run_command(nic_cmd)
     if nics and isinstance(nics, list):  # Ensure nics is a list
         save_json(nics, os.path.join(output_dir, f"network_interfaces_{target_ip}.json"))
         print_success(f"Found {len(nics)} network interfaces potentially associated with IP {target_ip}")
+
+        # Extract subscription ID from the first NIC found
+        if nics and 'subscriptionId' in nics[0]:
+            subscription_id = nics[0]['subscriptionId']
+            print_info(f"Using subscription ID: {subscription_id} for subsequent queries")
 
         # 1.1 Collect NSGs directly associated with NICs
         nic_subnet_ids = set()  # Use a set for unique subnet IDs
@@ -77,7 +83,9 @@ def find_nsgs_by_ip(target_ip: str) -> List[str]:
                 print_info(f"Subnet info parsed: RG={resource_group}, VNET={vnet_name}, Subnet={subnet_name}")
 
                 # Get detailed subnet information directly from Azure
-                subnet_cmd = f"az network vnet subnet show --resource-group \"{resource_group}\" --vnet-name \"{vnet_name}\" --name \"{subnet_name}\" -o json"
+                # Add subscription parameter if subscription_id was found
+                subscription_param = f" --subscription {subscription_id}" if subscription_id else ""
+                subnet_cmd = f"az network vnet subnet show --resource-group \"{resource_group}\" --vnet-name \"{vnet_name}\" --name \"{subnet_name}\"{subscription_param} -o json"
                 subnet_details = run_command(subnet_cmd)
 
                 if subnet_details:
@@ -110,4 +118,5 @@ def find_nsgs_by_ip(target_ip: str) -> List[str]:
     else:
         print_warning(f"\nNo NSGs found potentially related to IP {target_ip}")
 
-    return unique_nsg_ids
+    # Return both NSG IDs and subscription_id
+    return unique_nsg_ids, subscription_id
