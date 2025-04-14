@@ -277,6 +277,179 @@ if ($flowLogs -and $flowLogs.Length -gt 0 -and $flowLogs[0].enabled) {
 } else {
     Write-Host "未找到启用的流日志配置" -ForegroundColor Red
 }
+
+## Resource Graph查询优化
+
+在使用Azure Resource Graph进行大规模查询时，有两种主要的优化策略：精确过滤和分页。以下是这两种方法的比较和最佳实践。
+
+### 精确过滤 vs. 分页
+
+#### 精确过滤的优势
+
+1. **查询效率更高**：精确过滤会减少需要处理的数据量，让查询在服务器端更高效
+   
+2. **减少网络传输**：只传输真正需要的数据，减少网络带宽消耗
+
+3. **简化后续处理**：返回的结果更精确，减少客户端的过滤和处理工作
+
+4. **降低超时风险**：大型分页查询可能导致超时，而精确过滤通常能更快完成
+
+#### 分页的适用场景
+
+分页在以下情况更适合：
+
+1. **探索性查询**：当您不确定需要查找什么，需要浏览所有可能的结果时
+
+2. **无法有效过滤**：当没有足够的已知参数来构建精确过滤条件时
+
+3. **需要完整数据集**：当您确实需要处理所有匹配结果时
+
+### 优化的查询示例
+
+#### 使用已知参数进行精确过滤
+
+```bash
+# 使用已知信息精确定位子网
+az graph query -q "Resources 
+| where type =~ 'Microsoft.Network/virtualNetworks' 
+| where subscriptionId =~ 'KNOWN_SUBSCRIPTION_ID'
+| where name =~ 'KNOWN_VNET_NAME'
+| mv-expand subnet=properties.subnets 
+| project vnetName=name, subnetName=subnet.name, subnetId=subnet.id, nsgId=subnet.properties.networkSecurityGroup.id" 
+--query "data" -o json
 ```
 
-这个优化的验证流程利用了已知的subscription ID和VNET信息，减少了查询步骤，提高了准确性和效率。
+#### 评估结果数量
+
+在执行大型查询前，先评估结果数量：
+
+```bash
+# 评估结果数量
+az graph query -q "Resources 
+| where type =~ 'Microsoft.Network/virtualNetworks' 
+| where subscriptionId =~ 'KNOWN_SUBSCRIPTION_ID'
+| count" -o json
+```
+
+#### 必要时使用分页
+
+如果结果确实很多，可以使用分页：
+
+```bash
+# 第一页（前1000条）
+az graph query -q "Resources 
+| where type =~ 'Microsoft.Network/virtualNetworks' 
+| mv-expand subnet=properties.subnets 
+| project vnetName=name, subnetName=subnet.name, subnetId=subnet.id, nsgId=subnet.properties.networkSecurityGroup.id 
+| top 1000" -o json > page1.json
+
+# 第二页（1001-2000条）
+az graph query -q "Resources 
+| where type =~ 'Microsoft.Network/virtualNetworks' 
+| mv-expand subnet=properties.subnets 
+| project vnetName=name, subnetName=subnet.name, subnetId=subnet.id, nsgId=subnet.properties.networkSecurityGroup.id 
+| skip 1000 | top 1000" -o json > page2.json
+```
+
+### 最佳实践：组合使用
+
+在实际应用中，最佳策略是组合使用：
+
+1. **先使用已知参数进行精确过滤**：减小结果集大小
+   
+2. **如果结果仍然过多，再使用分页**：处理剩余的大量结果
+
+## 更新的优化验证流程
+
+基于上述优化策略，以下是更新的验证流程：
+
+### 步骤1：确认IP地址和基本信息
+
+```bash
+# 查询与特定IP相关的网络接口，获取基本信息
+az graph query -q "Resources 
+| where type =~ 'Microsoft.Network/networkInterfaces' 
+| mv-expand ipconfig=properties.ipConfigurations 
+| where ipconfig.properties.privateIPAddress =~ 'YOUR_TARGET_IP' 
+| project nicName=name, subscriptionId, resourceGroup, vnetName=split(tostring(ipconfig.properties.subnet.id), '/')[8], subnetName=split(tostring(ipconfig.properties.subnet.id), '/')[10], privateIp=ipconfig.properties.privateIPAddress, directNsgId=properties.networkSecurityGroup.id" 
+--query "data" -o json
+```
+
+### 步骤2：直接查询子网关联的NSG
+
+使用步骤1获取的精确信息，直接查询子网关联的NSG：
+
+```bash
+# 使用已知的资源组、VNET和子网名称直接查询
+az network vnet subnet show --resource-group "RESOURCE_GROUP" --vnet-name "VNET_NAME" --name "SUBNET_NAME" --subscription "SUBSCRIPTION_ID" --query "networkSecurityGroup.id" -o json
+```
+
+### 步骤3：获取NSG流日志配置和工作区ID
+
+使用获取到的NSG ID，直接查询其流日志配置：
+
+```bash
+# 查询NSG流日志配置
+az network watcher flow-log list --subscription "SUBSCRIPTION_ID" --query "[?contains(targetResourceId, 'NSG_ID')].{workspaceId:flowAnalyticsConfiguration.networkWatcherFlowAnalyticsConfiguration.workspaceId, enabled:enabled}" -o json
+```
+
+### 步骤4：执行KQL查询
+
+创建KQL查询文件并执行查询（与之前相同）。
+
+### 更新的PowerShell脚本
+
+```powershell
+# 设置参数
+$targetIp = "YOUR_TARGET_IP"
+
+# 步骤1：获取基本信息
+$nicInfo = (az graph query -q "Resources | where type =~ 'Microsoft.Network/networkInterfaces' | mv-expand ipconfig=properties.ipConfigurations | where ipconfig.properties.privateIPAddress =~ '$targetIp' | project nicName=name, subscriptionId, resourceGroup, vnetName=split(tostring(ipconfig.properties.subnet.id), '/')[8], subnetName=split(tostring(ipconfig.properties.subnet.id), '/')[10], privateIp=ipconfig.properties.privateIPAddress, directNsgId=properties.networkSecurityGroup.id" --query "data[0]" -o json) | ConvertFrom-Json
+
+Write-Host "找到网络接口: $($nicInfo.nicName)" -ForegroundColor Green
+Write-Host "订阅ID: $($nicInfo.subscriptionId)" -ForegroundColor Green
+Write-Host "资源组: $($nicInfo.resourceGroup)" -ForegroundColor Green
+Write-Host "虚拟网络: $($nicInfo.vnetName)" -ForegroundColor Green
+Write-Host "子网: $($nicInfo.subnetName)" -ForegroundColor Green
+
+# 步骤2：查询子网NSG
+$subnetNsgId = (az network vnet subnet show --resource-group $nicInfo.resourceGroup --vnet-name $nicInfo.vnetName --name $nicInfo.subnetName --subscription $nicInfo.subscriptionId --query "networkSecurityGroup.id" -o json) | ConvertFrom-Json
+
+Write-Host "子网关联的NSG: $subnetNsgId" -ForegroundColor Green
+
+# 使用直接关联的NSG或子网NSG
+$nsgId = if ($nicInfo.directNsgId) { $nicInfo.directNsgId } else { $subnetNsgId }
+$nsgName = $nsgId.Split('/')[-1]
+
+Write-Host "使用NSG: $nsgName" -ForegroundColor Green
+
+# 步骤3：获取流日志配置
+$flowLogs = (az network watcher flow-log list --subscription $nicInfo.subscriptionId --query "[?contains(targetResourceId, '$nsgId')].{workspaceId:flowAnalyticsConfiguration.networkWatcherFlowAnalyticsConfiguration.workspaceId, enabled:enabled}" -o json) | ConvertFrom-Json
+
+if ($flowLogs -and $flowLogs.Length -gt 0 -and $flowLogs[0].enabled) {
+    Write-Host "找到启用的流日志配置" -ForegroundColor Green
+    Write-Host "工作区ID: $($flowLogs[0].workspaceId)" -ForegroundColor Green
+    
+    # 步骤4：创建并执行KQL查询
+    "AzureNetworkAnalytics_CL
+    | where TimeGenerated > ago(24h)
+    | where FlowStatus_s == `"A`" 
+    | where SrcIP_s == `"$targetIp`" or DestIP_s == `"$targetIp`"
+    | project TimeGenerated, FlowDirection_s, SrcIP_s, DestIP_s, PublicIPs_s, DestPort_d, 
+             FlowStatus_s, L7Protocol_s, InboundBytes_d, OutboundBytes_d, NSGList_s
+    | order by TimeGenerated desc" | Out-File -FilePath "query.kql"
+    
+    Write-Host "执行KQL查询..." -ForegroundColor Yellow
+    $queryResults = (az monitor log-analytics query --workspace $flowLogs[0].workspaceId --subscription $nicInfo.subscriptionId --analytics-query "@query.kql" -o json) | ConvertFrom-Json
+    
+    Write-Host "查询完成，找到 $($queryResults.Length) 条记录" -ForegroundColor Green
+    
+    # 保存结果
+    $queryResults | ConvertTo-Json -Depth 10 > "flow_logs_$targetIp.json"
+    Write-Host "结果已保存到 flow_logs_$targetIp.json" -ForegroundColor Green
+} else {
+    Write-Host "未找到启用的流日志配置" -ForegroundColor Red
+}
+```
+
+这个更新的验证流程结合了精确过滤和直接查询的优点，确保在大规模环境中也能高效地获取NSG流日志数据。
