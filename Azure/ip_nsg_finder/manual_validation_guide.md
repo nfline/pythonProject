@@ -158,3 +158,125 @@ az monitor log-analytics query --workspace "WORKSPACE_ID" --subscription SUBSCRI
 通过这些步骤，您可以手动验证从IP地址到获取NSG流日志数据的完整流程。每个步骤都获取必要的信息，最终使用这些信息执行KQL查询获取流量数据。
 
 如有任何问题，请参考完整的Azure文档或联系Azure支持。
+
+## 优化验证流程
+
+以下是一个更简洁、准确且有逻辑的验证流程，特别适用于已知的subscription ID和VNET信息的情况：
+
+### 步骤1：确认IP地址和基本信息
+
+```bash
+# 查询与特定IP相关的网络接口，获取基本信息
+az graph query -q "Resources | where type =~ 'Microsoft.Network/networkInterfaces' | mv-expand ipconfig=properties.ipConfigurations | where ipconfig.properties.privateIPAddress =~ 'YOUR_TARGET_IP' | project nicName=name, subscriptionId, resourceGroup, vnetName=split(tostring(ipconfig.properties.subnet.id), '/')[8], subnetName=split(tostring(ipconfig.properties.subnet.id), '/')[10], privateIp=ipconfig.properties.privateIPAddress, directNsgId=properties.networkSecurityGroup.id" --query "data" -o json
+```
+
+这一步会返回：
+- subscriptionId
+- resourceGroup
+- vnetName（从子网ID提取）
+- subnetName（从子网ID提取）
+- directNsgId（网络接口直接关联的NSG，可能为null）
+
+### 步骤2：直接查询子网关联的NSG
+
+使用步骤1获取的信息，直接查询子网关联的NSG：
+
+```bash
+# 使用已知的资源组、VNET和子网名称直接查询
+az network vnet subnet show --resource-group "RESOURCE_GROUP" --vnet-name "VNET_NAME" --name "SUBNET_NAME" --subscription "SUBSCRIPTION_ID" --query "networkSecurityGroup.id" -o json
+```
+
+这一步会返回子网关联的NSG ID。
+
+### 步骤3：获取NSG流日志配置和工作区ID
+
+使用获取到的NSG ID，直接查询其流日志配置：
+
+```bash
+# 查询NSG流日志配置
+az network watcher flow-log list --subscription "SUBSCRIPTION_ID" --query "[?contains(targetResourceId, 'NSG_ID')].{workspaceId:flowAnalyticsConfiguration.networkWatcherFlowAnalyticsConfiguration.workspaceId, enabled:enabled}" -o json
+```
+
+这一步会返回：
+- workspaceId（Log Analytics工作区ID）
+- enabled（流日志是否启用）
+
+### 步骤4：执行KQL查询
+
+创建KQL查询文件：
+
+```bash
+echo 'AzureNetworkAnalytics_CL
+| where TimeGenerated > ago(24h)
+| where FlowStatus_s == "A" 
+| where SrcIP_s == "YOUR_TARGET_IP" or DestIP_s == "YOUR_TARGET_IP"
+| project TimeGenerated, FlowDirection_s, SrcIP_s, DestIP_s, PublicIPs_s, DestPort_d, 
+         FlowStatus_s, L7Protocol_s, InboundBytes_d, OutboundBytes_d, NSGList_s
+| order by TimeGenerated desc' > query.kql
+```
+
+执行查询：
+
+```bash
+# 执行KQL查询
+az monitor log-analytics query --workspace "WORKSPACE_ID" --subscription "SUBSCRIPTION_ID" --analytics-query "@query.kql" -o json
+```
+
+### 一键验证脚本
+
+以下PowerShell脚本可以自动完成整个验证过程：
+
+```powershell
+# 设置参数
+$targetIp = "YOUR_TARGET_IP"
+
+# 步骤1：获取基本信息
+$nicInfo = (az graph query -q "Resources | where type =~ 'Microsoft.Network/networkInterfaces' | mv-expand ipconfig=properties.ipConfigurations | where ipconfig.properties.privateIPAddress =~ '$targetIp' | project nicName=name, subscriptionId, resourceGroup, vnetName=split(tostring(ipconfig.properties.subnet.id), '/')[8], subnetName=split(tostring(ipconfig.properties.subnet.id), '/')[10], privateIp=ipconfig.properties.privateIPAddress, directNsgId=properties.networkSecurityGroup.id" --query "data[0]" -o json) | ConvertFrom-Json
+
+Write-Host "找到网络接口: $($nicInfo.nicName)" -ForegroundColor Green
+Write-Host "订阅ID: $($nicInfo.subscriptionId)" -ForegroundColor Green
+Write-Host "资源组: $($nicInfo.resourceGroup)" -ForegroundColor Green
+Write-Host "虚拟网络: $($nicInfo.vnetName)" -ForegroundColor Green
+Write-Host "子网: $($nicInfo.subnetName)" -ForegroundColor Green
+
+# 步骤2：查询子网NSG
+$subnetNsgId = (az network vnet subnet show --resource-group $nicInfo.resourceGroup --vnet-name $nicInfo.vnetName --name $nicInfo.subnetName --subscription $nicInfo.subscriptionId --query "networkSecurityGroup.id" -o json) | ConvertFrom-Json
+
+Write-Host "子网关联的NSG: $subnetNsgId" -ForegroundColor Green
+
+# 使用直接关联的NSG或子网NSG
+$nsgId = if ($nicInfo.directNsgId) { $nicInfo.directNsgId } else { $subnetNsgId }
+$nsgName = $nsgId.Split('/')[-1]
+
+Write-Host "使用NSG: $nsgName" -ForegroundColor Green
+
+# 步骤3：获取流日志配置
+$flowLogs = (az network watcher flow-log list --subscription $nicInfo.subscriptionId --query "[?contains(targetResourceId, '$nsgId')].{workspaceId:flowAnalyticsConfiguration.networkWatcherFlowAnalyticsConfiguration.workspaceId, enabled:enabled}" -o json) | ConvertFrom-Json
+
+if ($flowLogs -and $flowLogs.Length -gt 0 -and $flowLogs[0].enabled) {
+    Write-Host "找到启用的流日志配置" -ForegroundColor Green
+    Write-Host "工作区ID: $($flowLogs[0].workspaceId)" -ForegroundColor Green
+    
+    # 步骤4：创建并执行KQL查询
+    "AzureNetworkAnalytics_CL
+    | where TimeGenerated > ago(24h)
+    | where FlowStatus_s == `"A`" 
+    | where SrcIP_s == `"$targetIp`" or DestIP_s == `"$targetIp`"
+    | project TimeGenerated, FlowDirection_s, SrcIP_s, DestIP_s, PublicIPs_s, DestPort_d, 
+             FlowStatus_s, L7Protocol_s, InboundBytes_d, OutboundBytes_d, NSGList_s
+    | order by TimeGenerated desc" | Out-File -FilePath "query.kql"
+    
+    Write-Host "执行KQL查询..." -ForegroundColor Yellow
+    $queryResults = (az monitor log-analytics query --workspace $flowLogs[0].workspaceId --subscription $nicInfo.subscriptionId --analytics-query "@query.kql" -o json) | ConvertFrom-Json
+    
+    Write-Host "查询完成，找到 $($queryResults.Length) 条记录" -ForegroundColor Green
+    
+    # 保存结果
+    $queryResults | ConvertTo-Json -Depth 10 > "flow_logs_$targetIp.json"
+    Write-Host "结果已保存到 flow_logs_$targetIp.json" -ForegroundColor Green
+} else {
+    Write-Host "未找到启用的流日志配置" -ForegroundColor Red
+}
+```
+
+这个优化的验证流程利用了已知的subscription ID和VNET信息，减少了查询步骤，提高了准确性和效率。
