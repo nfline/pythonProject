@@ -450,6 +450,65 @@ if ($flowLogs -and $flowLogs.Length -gt 0 -and $flowLogs[0].enabled) {
 } else {
     Write-Host "未找到启用的流日志配置" -ForegroundColor Red
 }
+
+## 使用Azure Resource Graph查询虚拟网络和子网
+
+除了上述方法外，您还可以使用Azure Resource Graph进行更灵活的查询，特别是当您已经知道一些关键信息时：
+
+```bash
+# 使用已知的资源组和虚拟网络名称查询
+az graph query -q "Resources 
+| where type =~ 'Microsoft.Network/virtualNetworks' 
+| where resourceGroup =~ 'RESOURCE_GROUP' 
+| where name =~ 'VNET_NAME'
+| mv-expand subnet=properties.subnets 
+| project vnetName=name, subnetName=subnet.name, subnetPrefix=subnet.properties.addressPrefix, nsgId=subnet.properties.networkSecurityGroup.id, subscriptionId, resourceGroup" 
+--query "data" -o json
+```
+
+您还可以使用其他过滤条件来优化查询：
+
+```bash
+# 按订阅ID过滤
+az graph query -q "Resources 
+| where type =~ 'Microsoft.Network/virtualNetworks' 
+| where subscriptionId =~ 'SUBSCRIPTION_ID'
+| mv-expand subnet=properties.subnets 
+| project vnetName=name, subnetName=subnet.name, subnetPrefix=subnet.properties.addressPrefix, nsgId=subnet.properties.networkSecurityGroup.id, subscriptionId, resourceGroup" 
+--query "data" -o json
+```
+
+```bash
+# 按子网名称过滤
+az graph query -q "Resources 
+| where type =~ 'Microsoft.Network/virtualNetworks' 
+| mv-expand subnet=properties.subnets 
+| where subnet.name =~ 'SUBNET_NAME'
+| project vnetName=name, subnetName=subnet.name, subnetPrefix=subnet.properties.addressPrefix, nsgId=subnet.properties.networkSecurityGroup.id, subscriptionId, resourceGroup" 
+--query "data" -o json
+```
+
+```bash
+# 按IP地址前缀过滤
+az graph query -q "Resources 
+| where type =~ 'Microsoft.Network/virtualNetworks' 
+| mv-expand subnet=properties.subnets 
+| where subnet.properties.addressPrefix contains '10.0.0'
+| project vnetName=name, subnetName=subnet.name, subnetPrefix=subnet.properties.addressPrefix, nsgId=subnet.properties.networkSecurityGroup.id, subscriptionId, resourceGroup" 
+--query "data" -o json
+```
+
+```bash
+# 组合多个条件进行精确查询
+az graph query -q "Resources 
+| where type =~ 'Microsoft.Network/virtualNetworks' 
+| where subscriptionId =~ 'SUBSCRIPTION_ID'
+| where resourceGroup =~ 'RESOURCE_GROUP'
+| where name =~ 'VNET_NAME'
+| mv-expand subnet=properties.subnets 
+| where subnet.name =~ 'SUBNET_NAME'
+| project vnetName=name, subnetName=subnet.name, subnetPrefix=subnet.properties.addressPrefix, nsgId=subnet.properties.networkSecurityGroup.id, subscriptionId, resourceGroup" 
+--query "data" -o json
 ```
 
 这个更新的验证流程结合了精确过滤和直接查询的优点，确保在大规模环境中也能高效地获取NSG流日志数据。
