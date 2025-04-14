@@ -48,6 +48,29 @@ az graph query -q "Resources | where type =~ 'Microsoft.Network/virtualNetworks'
 az graph query -q "Resources | where type =~ 'Microsoft.Network/virtualNetworks' | mv-expand subnet=properties.subnets | project vnetName=name, subnetName=subnet.name, subnetId=subnet.id, nsgId=subnet.properties.networkSecurityGroup.id" -o json
 ```
 
+这个命令会返回所有虚拟网络中的所有子网及其关联的NSG ID（如果有）。这是获取完整子网列表的最可靠方法。
+
+### 保存所有子网信息到文件
+
+如果您想保存所有子网信息以便后续手动搜索，可以执行：
+
+```bash
+# 保存所有子网信息到JSON文件
+az graph query -q "Resources | where type =~ 'Microsoft.Network/virtualNetworks' | mv-expand subnet=properties.subnets | project vnetName=name, subnetName=subnet.name, subnetId=subnet.id, nsgId=subnet.properties.networkSecurityGroup.id" -o json > all_subnets.json
+```
+
+然后您可以使用文本编辑器或工具（如jq）在文件中搜索特定子网或IP地址。
+
+### 为什么其他筛选可能返回空结果
+
+如果按子网名称或ID片段筛选返回空结果，可能有以下原因：
+1. 子网名称或ID拼写不完全匹配（区分大小写）
+2. 子网可能在不同的订阅中
+3. 资源图表查询的数据可能有延迟（通常几分钟）
+4. 权限问题导致无法查看某些资源
+
+建议先获取所有子网列表，然后在结果中手动搜索相关信息，这样可以避免筛选条件不匹配的问题。
+
 ## 5. 按子网名称筛选
 
 如果您知道子网名称，可以这样筛选：
@@ -126,6 +149,37 @@ az graph query -q "Resources | where type =~ 'Microsoft.Network/virtualNetworks'
 # 查询特定NSG关联的所有子网
 az graph query -q "Resources | where type =~ 'Microsoft.Network/virtualNetworks' | mv-expand subnet=properties.subnets | where subnet.properties.networkSecurityGroup.id contains 'NSG_ID_PART' | project vnetName=name, subnetName=subnet.name, subnetId=subnet.id, nsgId=subnet.properties.networkSecurityGroup.id" -o json
 ```
+
+## 13. 手动验证流程建议
+
+如果您需要手动验证子网和NSG关系，建议按以下步骤操作：
+
+1. **获取并保存所有子网信息**：
+   ```bash
+   az graph query -q "Resources | where type =~ 'Microsoft.Network/virtualNetworks' | mv-expand subnet=properties.subnets | project vnetName=name, subnetName=subnet.name, subnetId=subnet.id, nsgId=subnet.properties.networkSecurityGroup.id" -o json > all_subnets.json
+   ```
+
+2. **获取目标IP的网络接口和子网ID**：
+   ```bash
+   az graph query -q "Resources | where type =~ 'Microsoft.Network/networkInterfaces' | mv-expand ipconfig=properties.ipConfigurations | where ipconfig.properties.privateIPAddress =~ 'YOUR_TARGET_IP' | project nicName=name, privateIp=ipconfig.properties.privateIPAddress, subnetId=tostring(ipconfig.properties.subnet.id)" -o json > target_ip_nic.json
+   ```
+
+3. **在保存的子网信息中搜索目标子网ID**：
+   使用文本编辑器或以下命令在`all_subnets.json`中搜索步骤2中获取的子网ID：
+   ```bash
+   # 使用PowerShell搜索
+   $subnetId = "YOUR_SUBNET_ID_FROM_STEP_2"
+   $allSubnets = Get-Content -Raw -Path .\all_subnets.json | ConvertFrom-Json
+   $allSubnets.data | Where-Object { $_.subnetId -like "*$subnetId*" }
+   
+   # 或使用jq (如果已安装)
+   cat all_subnets.json | jq '.data[] | select(.subnetId | contains("SUBNET_ID_PART"))'
+   ```
+
+4. **验证NSG关联**：
+   从搜索结果中查看`nsgId`字段，确认子网是否关联了NSG以及NSG的ID。
+
+这种手动方法可以绕过直接筛选可能导致的空结果问题，让您更可靠地验证子网和NSG的关系。
 
 ## 故障排除
 
