@@ -222,8 +222,8 @@ def execute_kql_query(workspace_id: str, kql_query: str, target_ip: str, nsg_id:
                     # Define expected column order based on KQL query in generate_kql_query
                     # This ensures the Excel file columns match the order in the query
                     expected_columns = [
-                        'TimeGenerated', 'FlowDirection_s', 'SrcIP_s', 'DestIP_s', 
-                        'PublicIPs_s', 'DestPort_d', 'FlowStatus_s', 'L7Protocol_s', 
+                        'TimeGenerated', 'FlowDirection_s', 'SrcIP_s', 'SrcPublicIPs_s', 'SrcPublicIPsClean',
+                        'DestIP_s', 'DestPublicIPsClean', 'DestPort_d', 'FlowStatus_s', 'L7Protocol_s', 
                         'InboundBytes_d', 'OutboundBytes_d', 'NSGList_s'
                     ]
                     
