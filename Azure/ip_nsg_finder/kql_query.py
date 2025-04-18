@@ -71,9 +71,10 @@ let isInExceptionRange = (ip:string) {{ ipv4_is_in_any_range(ip, InternalExcepti
 | where isInVNet(SrcIP_s) == false and isInVNet(DestIP_s) == false and isInExceptionRange(SrcIP_s) == false and isInExceptionRange(DestIP_s) == false
 | where isnotempty(DestPublicIPs_s) or isnotempty(SrcPublicIPs_s)
 | where SrcIP_s == "{target_ip}" or DestIP_s == "{target_ip}"
-| extend DestPublicIPArr = split(DestPublicIPs_s, ","), SrcPublicIPArr = split(SrcPublicIPs_s, ",")
-| mv-expand DestPublicIPArr, SrcPublicIPArr
-| project TimeGenerated, FlowDirection_s, SrcIP_s, SrcPublicIPArr, DestIP_s, DestPublicIPArr, DestPort_d, FlowStatus_s, L7Protocol_s, InboundBytes_d, OutboundBytes_d, NSGList_s
+| extend DestPublicIPsClean = extract_all(@"(([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3}))", DestPublicIPs_s)
+| extend SrcPublicIPsClean = extract_all(@"(([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3}))", SrcPublicIPs_s)
+| mv-expand DestPublicIPsClean to typeof(string)
+| project TimeGenerated, FlowDirection_s, SrcIP_s, SrcPublicIPs_s, DestIP_s, DestPublicIPsClean, DestPort_d, FlowStatus_s, L7Protocol_s, InboundBytes_d, OutboundBytes_d, NSGList_s
 | order by TimeGenerated desc'''
         return kql_internet_only.strip()
     else:
@@ -93,9 +94,10 @@ let isInExceptionRange = (ip:string) {{ ipv4_is_in_any_range(ip, InternalExcepti
                 print_warning(f"Could not extract NSG name from ID '{nsg_id}' for query filter.")
         # Expand all public IPs for consistent output
         query_parts.extend([
-            "| extend DestPublicIPArr = split(DestPublicIPs_s, ","), SrcPublicIPArr = split(SrcPublicIPs_s, ",")",
-            "| mv-expand DestPublicIPArr, SrcPublicIPArr",
-            "| project TimeGenerated, FlowDirection_s, SrcIP_s, SrcPublicIPArr, DestIP_s, DestPublicIPArr, DestPort_d, FlowStatus_s, L7Protocol_s, InboundBytes_d, OutboundBytes_d, NSGList_s",
+            "| extend DestPublicIPsClean = extract_all(@\"(([0-9]{1,3})\\.([0-9]{1,3})\\.([0-9]{1,3})\\.([0-9]{1,3}))\", DestPublicIPs_s)",
+            "| extend SrcPublicIPsClean = extract_all(@\"(([0-9]{1,3})\\.([0-9]{1,3})\\.([0-9]{1,3})\\.([0-9]{1,3}))\", SrcPublicIPs_s)",
+            "| mv-expand DestPublicIPsClean to typeof(string)",
+            "| project TimeGenerated, FlowDirection_s, SrcIP_s, SrcPublicIPs_s, DestIP_s, DestPublicIPsClean, DestPort_d, FlowStatus_s, L7Protocol_s, InboundBytes_d, OutboundBytes_d, NSGList_s",
             "| order by TimeGenerated desc"
         ])
         # Join all parts into a single query string
