@@ -18,12 +18,14 @@ def main():
     parser.add_argument('--time-range', '-t', type=int, default=24, 
                         help='Time range in hours to query flow logs (default: 24)')
     parser.add_argument('--verbose', '-v', action='store_true', help='Enable verbose output')
+    parser.add_argument('--internet-only', action='store_true', help='Only query Internet traffic (exclude internal ranges)')
     
     args = parser.parse_args()
     
     target_ip = args.ip
     time_range_hours = args.time_range
     verbose = args.verbose
+    internet_only = args.internet_only
     
     # Setup logging
     output_dir = ensure_output_dir()
@@ -39,26 +41,11 @@ def main():
                 handler.setLevel(logging.INFO)
     
     try:
-        # Check for Azure CLI before starting
-        import subprocess
-        print_info("Checking Azure CLI installation...")
-        result = subprocess.run(['az', '--version'], shell=True, capture_output=True, text=True)
-        if result.returncode != 0:
-            print_error("Azure CLI not found. Please install Azure CLI and log in before running this script.")
-            print_error("Installation guide: https://docs.microsoft.com/en-us/cli/azure/install-azure-cli")
-            sys.exit(1)
-            
-        # Check if logged in to Azure
-        print_info("Checking Azure CLI login status...")
-        result = subprocess.run(['az', 'account', 'show'], shell=True, capture_output=True, text=True)
-        if result.returncode != 0:
-            print_error("Not logged in to Azure. Please run 'az login' first.")
-            sys.exit(1)
-            
-        print_info("Pre-checks passed, starting analysis...")
+        # Start analysis directly without checking CLI installation or login status
+        print_info("Starting analysis...")
         
         # Perform main analysis
-        analyze_traffic(target_ip, time_range_hours, logger)
+        analyze_traffic(target_ip, time_range_hours, logger, internet_only=internet_only)
         
     except Exception as e:
         print_error(f"An unexpected error occurred: {e}")
