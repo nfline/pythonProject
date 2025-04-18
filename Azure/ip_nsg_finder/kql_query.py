@@ -72,9 +72,10 @@ let isInExceptionRange = (ip:string) {{ ipv4_is_in_any_range(ip, InternalExcepti
 | where isnotempty(DestPublicIPs_s) or isnotempty(SrcPublicIPs_s)
 | where SrcIP_s == "{target_ip}" or DestIP_s == "{target_ip}"
 | extend DestPublicIPsClean = extract_all(@"(([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3}))", DestPublicIPs_s)
+| extend DestPublicIPsClean = array_strcat(DestPublicIPsClean, ",")
 | extend SrcPublicIPsClean = extract_all(@"(([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3}))", SrcPublicIPs_s)
-| mv-expand DestPublicIPsClean to typeof(string)
-| project TimeGenerated, FlowDirection_s, SrcIP_s, SrcPublicIPs_s, DestIP_s, DestPublicIPsClean, DestPort_d, FlowStatus_s, L7Protocol_s, InboundBytes_d, OutboundBytes_d, NSGList_s
+| extend SrcPublicIPsClean = array_strcat(SrcPublicIPsClean, ",")
+| project TimeGenerated, FlowDirection_s, SrcIP_s, SrcPublicIPs_s, SrcPublicIPsClean, DestIP_s, DestPublicIPsClean, DestPort_d, FlowStatus_s, L7Protocol_s, InboundBytes_d, OutboundBytes_d, NSGList_s
 | order by TimeGenerated desc'''
         return kql_internet_only.strip()
     else:
@@ -94,11 +95,12 @@ let isInExceptionRange = (ip:string) {{ ipv4_is_in_any_range(ip, InternalExcepti
                 print_warning(f"Could not extract NSG name from ID '{nsg_id}' for query filter.")
         # Expand all public IPs for consistent output
         query_parts.extend([
-            "| extend DestPublicIPsClean = extract_all(@\"(([0-9]{1,3})\\.([0-9]{1,3})\\.([0-9]{1,3})\\.([0-9]{1,3}))\", DestPublicIPs_s)",
-            "| extend SrcPublicIPsClean = extract_all(@\"(([0-9]{1,3})\\.([0-9]{1,3})\\.([0-9]{1,3})\\.([0-9]{1,3}))\", SrcPublicIPs_s)",
-            "| mv-expand DestPublicIPsClean to typeof(string)",
-            "| project TimeGenerated, FlowDirection_s, SrcIP_s, SrcPublicIPs_s, DestIP_s, DestPublicIPsClean, DestPort_d, FlowStatus_s, L7Protocol_s, InboundBytes_d, OutboundBytes_d, NSGList_s",
-            "| order by TimeGenerated desc"
+            r"| extend DestPublicIPsClean = extract_all(@\"(([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3}))\", DestPublicIPs_s)",
+            r"| extend DestPublicIPsClean = array_strcat(DestPublicIPsClean, ",")",
+            r"| extend SrcPublicIPsClean = extract_all(@\"(([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3}))\", SrcPublicIPs_s)",
+            r"| extend SrcPublicIPsClean = array_strcat(SrcPublicIPsClean, ",")",
+            r"| project TimeGenerated, FlowDirection_s, SrcIP_s, SrcPublicIPs_s, SrcPublicIPsClean, DestIP_s, DestPublicIPsClean, DestPort_d, FlowStatus_s, L7Protocol_s, InboundBytes_d, OutboundBytes_d, NSGList_s",
+            r"| order by TimeGenerated desc"
         ])
         # Join all parts into a single query string
         full_query = "\n".join(query_parts)
