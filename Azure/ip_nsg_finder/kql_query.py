@@ -60,42 +60,47 @@ def generate_kql_query(target_ip: str,
     end_time_str = end_time.strftime('%Y-%m-%dT%H:%M:%SZ')
     
     if internet_only:
-        # Internet Only KQL片段，VNetRanges和InternalExceptionRanges默认空
+        # Internet Only KQL: Exclude all flows where SrcIP or DestIP is in VNetRanges/InternalExceptionRanges, then select flows with any public IP value, and expand all public IPs.
         kql_internet_only = f'''
-let VNetRanges = dynamic([]);
+let VNetRanges = dynamic(["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]);
 let InternalExceptionRanges = dynamic([]);
-let isInVNet = (ip_string:string) {{ ipv4_is_in_any_range(ip_string, VNetRanges) }};
-let isInExceptionRange = (ip_string:string) {{ ipv4_is_in_any_range(ip_string, InternalExceptionRanges) }};
+let isInVNet = (ip:string) {{ ipv4_is_in_any_range(ip, VNetRanges) }};
+let isInExceptionRange = (ip:string) {{ ipv4_is_in_any_range(ip, InternalExceptionRanges) }};
 {table_name}
 | where TimeGenerated between (datetime('{start_time_str}') .. datetime('{end_time_str}'))
-| extend PublicDestIPs = split(DestPublicIPs_s, ","), PublicDestIP = tostring(split(DestPublicIPs_s, ",")[0])
-| extend Destination_IP = tostring(split(PublicDestIP, ":")[0])
-| where isInVNet(SrcIP_s) == false and isInVNet(Destination_IP) == false and isInExceptionRange(Destination_IP) == false
+| where isInVNet(SrcIP_s) == false and isInVNet(DestIP_s) == false and isInExceptionRange(SrcIP_s) == false and isInExceptionRange(DestIP_s) == false
+| where isnotempty(DestPublicIPs_s) or isnotempty(SrcPublicIPs_s)
 | where SrcIP_s == "{target_ip}" or DestIP_s == "{target_ip}"
-| project TimeGenerated, FlowDirection_s, SrcIP_s, DestIP_s, PublicIPs_s, DestPort_d, FlowStatus_s, L7Protocol_s, InboundBytes_d, OutboundBytes_d, NSGList_s
+| extend DestPublicIPArr = split(DestPublicIPs_s, ","), SrcPublicIPArr = split(SrcPublicIPs_s, ",")
+| mv-expand DestPublicIPArr to typeof(string)
+| mv-expand SrcPublicIPArr to typeof(string)
+| project TimeGenerated, FlowDirection_s, SrcIP_s, SrcPublicIPArr, DestIP_s, DestPublicIPArr, DestPort_d, FlowStatus_s, L7Protocol_s, InboundBytes_d, OutboundBytes_d, NSGList_s
 | order by TimeGenerated desc'''
         return kql_internet_only.strip()
     else:
-        # Build the query parts (Reordered based on feedback)
+        # Build the query parts (all comments in English)
         query_parts = [
             table_name,
-            f"| where TimeGenerated between (datetime('{start_time_str}') .. datetime('{end_time_str}'))", # 1. Time filter
-            f'| where FlowStatus_s == "A"', # 2. Status filter (like successful query)
-            f'| where SrcIP_s == "{target_ip}" or DestIP_s == "{target_ip}"' # 3. IP filter
+            f"| where TimeGenerated between (datetime('{start_time_str}') .. datetime('{end_time_str}'))", # 1. Filter by time range
+            f'| where FlowStatus_s == "A"', # 2. Only successful flows
+            f'| where SrcIP_s == "{target_ip}" or DestIP_s == "{target_ip}"' # 3. Filter by target IP
         ]
         # Add NSG filter if provided
         if nsg_id:
             try:
                 nsg_name = nsg_id.split('/')[-1]
-                query_parts.append(f'| where NSGList_s contains "{nsg_name}"') # 4. NSG filter (Use 'contains' for flexibility)
+                query_parts.append(f'| where NSGList_s contains "{nsg_name}"') # 4. Filter by NSG name
             except Exception:
                 print_warning(f"Could not extract NSG name from ID '{nsg_id}' for query filter.")
-        # Add projection and ordering (matching user requested order)
+        # Expand all public IPs for consistent output
         query_parts.extend([
-            "| project TimeGenerated, FlowDirection_s, SrcIP_s, DestIP_s, PublicIPs_s, DestPort_d, FlowStatus_s, L7Protocol_s, InboundBytes_d, OutboundBytes_d, NSGList_s",
+            "| extend DestPublicIPArr = split(DestPublicIPs_s, ","), SrcPublicIPArr = split(SrcPublicIPs_s, ",")",
+            "| mv-expand DestPublicIPArr to typeof(string)",
+            "| mv-expand SrcPublicIPArr to typeof(string)",
+            "| project TimeGenerated, FlowDirection_s, SrcIP_s, SrcPublicIPArr, DestIP_s, DestPublicIPArr, DestPort_d, FlowStatus_s, L7Protocol_s, InboundBytes_d, OutboundBytes_d, NSGList_s",
             "| order by TimeGenerated desc"
         ])
-        # Join parts into a single query string
+        # Join all parts into a single query string
         full_query = "\n".join(query_parts)
         return full_query.strip()
 
