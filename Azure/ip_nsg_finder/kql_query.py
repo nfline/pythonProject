@@ -72,8 +72,7 @@ let isInExceptionRange = (ip:string) {{ ipv4_is_in_any_range(ip, InternalExcepti
 | where isnotempty(DestPublicIPs_s) or isnotempty(SrcPublicIPs_s)
 | where SrcIP_s == "{target_ip}" or DestIP_s == "{target_ip}"
 | extend DestPublicIPArr = split(DestPublicIPs_s, ","), SrcPublicIPArr = split(SrcPublicIPs_s, ",")
-| mv-expand DestPublicIPArr to typeof(string)
-| mv-expand SrcPublicIPArr to typeof(string)
+| mv-expand DestPublicIPArr, SrcPublicIPArr
 | project TimeGenerated, FlowDirection_s, SrcIP_s, SrcPublicIPArr, DestIP_s, DestPublicIPArr, DestPort_d, FlowStatus_s, L7Protocol_s, InboundBytes_d, OutboundBytes_d, NSGList_s
 | order by TimeGenerated desc'''
         return kql_internet_only.strip()
@@ -95,8 +94,7 @@ let isInExceptionRange = (ip:string) {{ ipv4_is_in_any_range(ip, InternalExcepti
         # Expand all public IPs for consistent output
         query_parts.extend([
             "| extend DestPublicIPArr = split(DestPublicIPs_s, ","), SrcPublicIPArr = split(SrcPublicIPs_s, ",")",
-            "| mv-expand DestPublicIPArr to typeof(string)",
-            "| mv-expand SrcPublicIPArr to typeof(string)",
+            "| mv-expand DestPublicIPArr, SrcPublicIPArr",
             "| project TimeGenerated, FlowDirection_s, SrcIP_s, SrcPublicIPArr, DestIP_s, DestPublicIPArr, DestPort_d, FlowStatus_s, L7Protocol_s, InboundBytes_d, OutboundBytes_d, NSGList_s",
             "| order by TimeGenerated desc"
         ])
