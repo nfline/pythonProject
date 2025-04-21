@@ -62,7 +62,7 @@ def generate_kql_query(target_ip: str,
     if internet_only:
         # Internet Only KQL: Exclude all flows where SrcIP or DestIP is in VNetRanges/InternalExceptionRanges, then select flows with any public IP value, and expand all public IPs.
         kql_internet_only = f'''
-let VNetRanges = dynamic(["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]);
+let VNetRanges = dynamic([]);
 let InternalExceptionRanges = dynamic([]);
 let isInVNet = (ip:string) {{ ipv4_is_in_any_range(ip, VNetRanges) }};
 let isInExceptionRange = (ip:string) {{ ipv4_is_in_any_range(ip, InternalExceptionRanges) }};
@@ -71,11 +71,11 @@ let isInExceptionRange = (ip:string) {{ ipv4_is_in_any_range(ip, InternalExcepti
 | where isInVNet(SrcIP_s) == false and isInVNet(DestIP_s) == false and isInExceptionRange(SrcIP_s) == false and isInExceptionRange(DestIP_s) == false
 | where isnotempty(DestPublicIPs_s) or isnotempty(SrcPublicIPs_s)
 | where SrcIP_s == "{target_ip}" or DestIP_s == "{target_ip}"
-| extend DestPublicIPsClean = extract_all(@"(\d+\.\d+\.\d+\.\d+)", DestPublicIPs_s)
+| extend DestPublicIPsClean = extract_all(@"([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)", DestPublicIPs_s)
 | extend DestPublicIPsClean = array_strcat(DestPublicIPsClean, ",")
-| extend SrcPublicIPsClean = extract_all(@"(\d+\.\d+\.\d+\.\d+)", SrcPublicIPs_s)
+| extend SrcPublicIPsClean = extract_all(@"([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)", SrcPublicIPs_s)
 | extend SrcPublicIPsClean = array_strcat(SrcPublicIPsClean, ",")
-| project TimeGenerated, FlowDirection_s, SrcIP_s, SrcPublicIPs_s, SrcPublicIPsClean, DestIP_s, DestPublicIPsClean, DestPort_d, FlowStatus_s, L7Protocol_s, InboundBytes_d, OutboundBytes_d, NSGList_s
+| project TimeGenerated, FlowDirection_s, SrcIP_s, SrcPublicIPsClean, DestIP_s, DestPublicIPsClean, DestPort_d, FlowStatus_s, L7Protocol_s, InboundBytes_d, OutboundBytes_d, NSGList_s
 | order by TimeGenerated desc'''
         return kql_internet_only.strip()
     else:
@@ -83,7 +83,7 @@ let isInExceptionRange = (ip:string) {{ ipv4_is_in_any_range(ip, InternalExcepti
         query_parts = [
             table_name,
             f"| where TimeGenerated between (datetime('{start_time_str}') .. datetime('{end_time_str}'))", # 1. Filter by time range
-            f'| where FlowStatus_s == "A"', # 2. Only successful flows
+            # f'| where FlowStatus_s == "A"', # 2. Only successful flows
             f'| where SrcIP_s == "{target_ip}" or DestIP_s == "{target_ip}"' # 3. Filter by target IP
         ]
         # Add NSG filter if provided
@@ -95,11 +95,11 @@ let isInExceptionRange = (ip:string) {{ ipv4_is_in_any_range(ip, InternalExcepti
                 print_warning(f"Could not extract NSG name from ID '{nsg_id}' for query filter.")
         # Expand all public IPs for consistent output
         query_parts.extend([
-            "| extend DestPublicIPsClean = extract_all(@\"(\\d+\\.\\d+\\.\\d+\\.\\d+)\", DestPublicIPs_s)",
+            "| extend DestPublicIPsClean = extract_all(@\"([0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+)\", DestPublicIPs_s)",
             "| extend DestPublicIPsClean = array_strcat(DestPublicIPsClean, \",\")",
-            "| extend SrcPublicIPsClean = extract_all(@\"(\\d+\\.\\d+\\.\\d+\\.\\d+)\", SrcPublicIPs_s)",
+            "| extend SrcPublicIPsClean = extract_all(@\"([0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+)\", SrcPublicIPs_s)",
             "| extend SrcPublicIPsClean = array_strcat(SrcPublicIPsClean, \",\")",
-            "| project TimeGenerated, FlowDirection_s, SrcIP_s, SrcPublicIPs_s, SrcPublicIPsClean, DestIP_s, DestPublicIPsClean, DestPort_d, FlowStatus_s, L7Protocol_s, InboundBytes_d, OutboundBytes_d, NSGList_s",
+            "| project TimeGenerated, FlowDirection_s, SrcIP_s, SrcPublicIPsClean, DestIP_s, DestPublicIPsClean, DestPort_d, FlowStatus_s, L7Protocol_s, InboundBytes_d, OutboundBytes_d, NSGList_s",
             "| order by TimeGenerated desc"
         ])
         # Join all parts into a single query string
