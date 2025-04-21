@@ -12,7 +12,7 @@ from .flow_logs import get_nsg_flow_logs_config, get_log_analytics_workspaces
 from .kql_query import generate_kql_query, execute_kql_query
 from .logging_utils import setup_logger
 
-def analyze_traffic(target_ip: str, time_range_hours: int = 24, logger: Optional[logging.Logger] = None, internet_only: bool = False) -> None:
+def analyze_traffic(target_ip: str, time_range_hours: int = 24, logger: Optional[logging.Logger] = None, query_type: str = "standard") -> None:
     """
     Main analysis function: Finds NSGs, gets configs, generates and executes KQL queries.
     """
@@ -81,7 +81,7 @@ def analyze_traffic(target_ip: str, time_range_hours: int = 24, logger: Optional
             print_info(f"\nExecuting query for NSG '{nsg_name}' using workspace ID: {workspace_id}")
             
             # Generate the KQL query
-            kql_query = generate_kql_query(target_ip, time_range_hours, nsg_id, internet_only=internet_only)
+            kql_query = generate_kql_query(target_ip, time_range_hours, nsg_id, query_type=query_type)
             
             # Execute the query
             results = execute_kql_query(

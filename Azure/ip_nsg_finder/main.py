@@ -18,14 +18,16 @@ def main():
     parser.add_argument('--time-range', '-t', type=int, default=24, 
                         help='Time range in hours to query flow logs (default: 24)')
     parser.add_argument('--verbose', '-v', action='store_true', help='Enable verbose output')
-    parser.add_argument('--internet-only', action='store_true', help='Only query Internet traffic (exclude internal ranges)')
+    parser.add_argument('--query-type', choices=['standard', 'internet', 'intranet', 'noninternet_nonintranet'],
+                        default='standard', help='Query type: standard (all traffic), internet (public IP traffic only),\n'
+                        'intranet (VNet traffic only) or noninternet_nonintranet (edge cases)')
     
     args = parser.parse_args()
     
     target_ip = args.ip
     time_range_hours = args.time_range
     verbose = args.verbose
-    internet_only = args.internet_only
+    query_type = args.query_type
     
     # Setup logging
     output_dir = ensure_output_dir()
@@ -45,7 +47,7 @@ def main():
         print_info("Starting analysis...")
         
         # Perform main analysis
-        analyze_traffic(target_ip, time_range_hours, logger, internet_only=internet_only)
+        analyze_traffic(target_ip, time_range_hours, logger, query_type=query_type)
         
     except Exception as e:
         print_error(f"An unexpected error occurred: {e}")

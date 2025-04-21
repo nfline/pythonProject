@@ -37,12 +37,22 @@ def generate_simple_kql_query(target_ip: str, time_range_hours: int = 24) -> str
 def generate_kql_query(target_ip: str,
                        time_range_hours: int = 24, # Keep for default case
                        nsg_id: Optional[str] = None,
+                       query_type: str = "standard", # Query type parameter
                        start_time_dt: Optional[datetime] = None,
                        end_time_dt: Optional[datetime] = None,
-                       internet_only: bool = False) -> str:
+                       internet_only: bool = False) -> str: # Kept for backward compatibility
     """
     Generates a KQL query for NSG flow logs (AzureNetworkAnalytics_CL),
     optionally filtering by a specific NSG ID and allowing specific time windows.
+    
+    Parameters:
+        target_ip: The IP address to filter traffic for
+        time_range_hours: Number of hours to look back from current time (or from start_time_dt)
+        nsg_id: Optional NSG resource ID to filter results
+        query_type: Type of query to generate: "standard", "internet" (public IPs only), 
+                    "intranet" (VNet traffic only), or "noninternet_nonintranet" (edge cases)
+        start_time_dt: Optional explicit start time
+        end_time_dt: Optional explicit end time
     """
     table_name = "AzureNetworkAnalytics_CL" # Common table for NSG Flow Logs v2 with Traffic Analytics
 
@@ -59,7 +69,12 @@ def generate_kql_query(target_ip: str,
     start_time_str = start_time.strftime('%Y-%m-%dT%H:%M:%SZ')
     end_time_str = end_time.strftime('%Y-%m-%dT%H:%M:%SZ')
     
+    # For backward compatibility - if internet_only is True, override query_type
     if internet_only:
+        query_type = "internet"
+        
+    # Determine which query type to generate
+    if query_type == "internet":
         # Internet Only KQL: Exclude all flows where SrcIP or DestIP is in VNetRanges/InternalExceptionRanges, then select flows with any public IP value, and expand all public IPs.
         kql_internet_only = fr'''
 let VNetRanges = dynamic([]);
@@ -78,7 +93,113 @@ let isInExceptionRange = (ip:string) {{ ipv4_is_in_any_range(ip, InternalExcepti
 | project TimeGenerated, FlowDirection_s, SrcIP_s, SrcPublicIPsClean, DestIP_s, DestPublicIPsClean, DestPort_d, FlowStatus_s, L7Protocol_s, InboundBytes_d, OutboundBytes_d, NSGList_s
 | order by TimeGenerated desc'''
         return kql_internet_only.strip()
-    else:
+    elif query_type == "intranet":
+        # Intranet Traffic KQL: Only include flows where both source and destination IPs are in VNet ranges
+        kql_intranet = fr'''
+//**Report 1 - Intranet Traffic**
+let VNetRanges = dynamic([
+    # "10.0.0.0/8",
+    # "172.16.0.0/12",
+    # "192.168.0.0/16"
+    // Add more VNet CIDR ranges in quotes, separated by commas
+]);
+// Helper function to check if an IP is in ANY of the VNet ranges
+let IsInVNet = (ip_string:string) {{
+    ipv4_is_in_any_range(ip_string, VNetRanges)
+}};
+
+{table_name}
+| where SubType_s == "FlowLog"
+| where TimeGenerated between (datetime('{start_time_str}') .. datetime('{end_time_str}'))
+| extend PublicSrcIPs = split(iif(isnotempty(SrcPublicIPs_s), SrcPublicIPs_s, "-"), ",")
+| extend PublicDestIPs = split(iif(isnotempty(DestPublicIPs_s), DestPublicIPs_s, "-"), ",")
+| mv-expand PublicSrcIP = tostring(split(PublicSrcIPs, "|")[0]), PublicDestIP = tostring(split(PublicDestIPs, "|")[0])
+| extend Source_IP = iif(isnotempty(SrcPublicIPs_s), PublicSrcIP, SrcIP_s)
+| extend Destination_IP = iif(isnotempty(DestPublicIPs_s), PublicDestIP, DestIP_s)
+
+| where SrcIP_s == "{target_ip}" or DestIP_s == "{target_ip}"
+
+// Filter: Source IP is in VNet AND Destination IP is in VNet
+| where IsInVNet(Source_IP) and IsInVNet(Destination_IP)
+
+// Extract just the NSG name from the full ID
+| extend NSGName_s = tostring(split(NSGList_s, "/")[-1])
+
+// Summarize blocks
+| summarize 
+    SumFlows = count(),                        // Total flow log entries for this source-dest pair (across all ports)
+    PortUsed = make_set(DestPort_d),           // Create a list of unique destination ports used
+    Dest_IP = make_set(Destination_IP),        // Create a list of unique destination addresses 
+    FirstSeen = min(TimeGenerated),            // First time this source-dest pair was seen (on any port)
+    LastSeen = max(TimeGenerated)              // Last time this source-dest pair was seen (on any port)
+    by Source_IP, Destination_IP, L7Protocol_s, FlowDirection_s, FlowStatus_s, NSGName_s
+| order by NSGName_s, Source_IP asc'''
+        return kql_intranet.strip()
+    
+    elif query_type == "noninternet_nonintranet":
+        # Non-Internet, Non-Intranet Traffic KQL: Find traffic that doesn't match either Internet or Intranet criteria
+        kql_noninternet_nonintranet = fr'''
+//**Report 3 - Not Internet or Intranet Traffic**
+
+// *** DEFINE YOUR VNET RANGES HERE ***
+let VNetRanges = dynamic([
+    "10.0.0.0/8",
+    "172.16.0.0/12",
+    "192.168.0.0/16"
+    // Add more VNet CIDR ranges in quotes, separated by commas
+]);
+
+// Define the specific public ranges treated as internal
+let InternalExceptionRanges = dynamic([
+    "1.1.0.0/16",
+    "2.2.0.0/16"
+]);
+
+// Helper function to check if an IP is in ANY of the VNet ranges
+let IsInVNet = (ip_string:string) {{
+    ipv4_is_in_any_range(ip_string, VNetRanges)
+}};
+
+// Helper function to check if an IP is in ANY of the Exception ranges
+let IsInExceptionRange = (ip_string:string) {{
+    ipv4_is_in_any_range(ip_string, InternalExceptionRanges)
+}};
+
+// Main Query
+{table_name}
+| where SubType_s == "FlowLog"
+| where TimeGenerated between (datetime('{start_time_str}') .. datetime('{end_time_str}'))
+| extend PublicSrcIPs = split(iif(isnotempty(SrcPublicIPs_s), SrcPublicIPs_s, "-"), ",")
+| extend PublicDestIPs = split(iif(isnotempty(DestPublicIPs_s), DestPublicIPs_s, "-"), ",")
+| mv-expand PublicSrcIP = tostring(split(PublicSrcIPs, "|")[0]), PublicDestIP = tostring(split(PublicDestIPs, "|")[0])
+| extend Source_IP = iif(isnotempty(SrcPublicIPs_s), PublicSrcIP, SrcIP_s)
+| extend Destination_IP = iif(isnotempty(DestPublicIPs_s), PublicDestIP, DestIP_s)
+
+| where SrcIP_s == "{target_ip}" or DestIP_s == "{target_ip}"
+
+// Filter: Source IP is in VNet
+| where IsInVNet(Source_IP)
+
+// AND Destination IP meets the criteria:
+// (Is NEITHER Public AND NOT InternalExc) OR (Is in Exception Range)
+| where (IsInVNet(Destination_IP) == true and not(IsInExceptionRange(Destination_IP)))
+    or IsInExceptionRange(Destination_IP)
+
+// ***Extract just the NSG name from the full ID***
+| extend NSGName_s = tostring(split(NSGList_s, "/")[-1])
+
+// ***Summarize blocks***
+| summarize 
+    SumFlows = count(),                        // Total flow log entries for this source-dest pair (across all ports)
+    PortUsed = make_set(DestPort_d),           // Create a list of unique destination ports used
+    Dest_IP = make_set(Destination_IP),        // Create a list of unique destination addresses 
+    FirstSeen = min(TimeGenerated),            // First time this source-dest pair was seen (on any port)
+    LastSeen = max(TimeGenerated)              // Last time this source-dest pair was seen (on any port)
+    by Source_IP, Destination_IP, L7Protocol_s, FlowDirection_s, FlowStatus_s, NSGName_s
+| order by NSGName_s, NSGName_s, Source_IP asc'''
+        return kql_noninternet_nonintranet.strip()
+    
+    else:  # standard query type
         # Build the query parts (all comments in English)
         query_parts = [
             table_name,
