@@ -98,9 +98,9 @@ let isInExceptionRange = (ip:string) {{ ipv4_is_in_any_range(ip, InternalExcepti
         kql_intranet = fr'''
 //**Report 1 - Intranet Traffic**
 let VNetRanges = dynamic([
-    # "10.0.0.0/8",
-    # "172.16.0.0/12",
-    # "192.168.0.0/16"
+    "10.0.0.0/8",
+    "172.16.0.0/12",
+    "192.168.0.0/16"
     // Add more VNet CIDR ranges in quotes, separated by commas
 ]);
 // Helper function to check if an IP is in ANY of the VNet ranges
@@ -109,7 +109,6 @@ let IsInVNet = (ip_string:string) {{
 }};
 
 {table_name}
-| where SubType_s == "FlowLog"
 | where TimeGenerated between (datetime('{start_time_str}') .. datetime('{end_time_str}'))
 | extend PublicSrcIPs = split(iif(isnotempty(SrcPublicIPs_s), SrcPublicIPs_s, "-"), ",")
 | extend PublicDestIPs = split(iif(isnotempty(DestPublicIPs_s), DestPublicIPs_s, "-"), ",")
@@ -151,8 +150,8 @@ let VNetRanges = dynamic([
 
 // Define the specific public ranges treated as internal
 let InternalExceptionRanges = dynamic([
-    "1.1.0.0/16",
-    "2.2.0.0/16"
+    # "1.1.0.0/16",
+    # "2.2.0.0/16"
 ]);
 
 // Helper function to check if an IP is in ANY of the VNet ranges
@@ -167,7 +166,6 @@ let IsInExceptionRange = (ip_string:string) {{
 
 // Main Query
 {table_name}
-| where SubType_s == "FlowLog"
 | where TimeGenerated between (datetime('{start_time_str}') .. datetime('{end_time_str}'))
 | extend PublicSrcIPs = split(iif(isnotempty(SrcPublicIPs_s), SrcPublicIPs_s, "-"), ",")
 | extend PublicDestIPs = split(iif(isnotempty(DestPublicIPs_s), DestPublicIPs_s, "-"), ",")
