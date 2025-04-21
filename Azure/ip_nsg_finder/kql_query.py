@@ -96,7 +96,7 @@ let isInExceptionRange = (ip:string) {{ ipv4_is_in_any_range(ip, InternalExcepti
     elif query_type == "intranet":
         # Intranet Traffic KQL: Only include flows where both source and destination IPs are in VNet ranges
         kql_intranet = fr'''
-//**Report 1 - Intranet Traffic**
+//**Report 2 - Intranet Traffic Only**
 let VNetRanges = dynamic([
     "10.0.0.0/8",
     "172.16.0.0/12",
@@ -104,23 +104,26 @@ let VNetRanges = dynamic([
     // Add more VNet CIDR ranges in quotes, separated by commas
 ]);
 // Helper function to check if an IP is in ANY of the VNet ranges
-let IsInVNet = (ip_string:string) {{
-    ipv4_is_in_any_range(ip_string, VNetRanges)
-}};
+let isInVNet = (ip:string) {{ ipv4_is_in_any_range(ip, VNetRanges) }};
 
 {table_name}
 | where TimeGenerated between (datetime('{start_time_str}') .. datetime('{end_time_str}'))
-| extend PublicSrcIPs = iif(isnotempty(SrcPublicIPs_s), split(SrcPublicIPs_s, ","), dynamic(["-"]))
-| extend PublicDestIPs = iif(isnotempty(DestPublicIPs_s), split(DestPublicIPs_s, ","), dynamic(["-"]))
-| mv-expand PublicSrcIP = tostring(split(iif(PublicSrcIPs[0] != "-", tostring(PublicSrcIPs[0]), "-"), "|")[0]) to typeof(string)
-| mv-expand PublicDestIP = tostring(split(iif(PublicDestIPs[0] != "-", tostring(PublicDestIPs[0]), "-"), "|")[0]) to typeof(string)
-| extend Source_IP = iif(isnotempty(SrcPublicIPs_s), PublicSrcIP, SrcIP_s)
-| extend Destination_IP = iif(isnotempty(DestPublicIPs_s), PublicDestIP, DestIP_s)
-
 | where SrcIP_s == "{target_ip}" or DestIP_s == "{target_ip}"
 
+// Process Source IPs
+| extend SrcIPtoCheck = SrcIP_s
+| extend SrcPublicIPsClean = extract_all(@"([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)", SrcPublicIPs_s)
+| extend SrcPublicIPtoCheck = iif(array_length(SrcPublicIPsClean) > 0, tostring(SrcPublicIPsClean[0]), "")
+| extend SrcIPtoCheck = iif(isnotempty(SrcPublicIPtoCheck), SrcPublicIPtoCheck, SrcIP_s)
+
+// Process Destination IPs
+| extend DestIPtoCheck = DestIP_s
+| extend DestPublicIPsClean = extract_all(@"([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)", DestPublicIPs_s)
+| extend DestPublicIPtoCheck = iif(array_length(DestPublicIPsClean) > 0, tostring(DestPublicIPsClean[0]), "")
+| extend DestIPtoCheck = iif(isnotempty(DestPublicIPtoCheck), DestPublicIPtoCheck, DestIP_s)
+
 // Filter: Source IP is in VNet AND Destination IP is in VNet
-| where IsInVNet(Source_IP) and IsInVNet(Destination_IP)
+| where isInVNet(SrcIPtoCheck) and isInVNet(DestIPtoCheck)
 
 // Extract just the NSG name from the full ID
 | extend NSGName_s = tostring(split(NSGList_s, "/")[-1])
@@ -129,19 +132,17 @@ let IsInVNet = (ip_string:string) {{
 | summarize 
     SumFlows = count(),                        // Total flow log entries for this source-dest pair (across all ports)
     PortUsed = make_set(DestPort_d),           // Create a list of unique destination ports used
-    Dest_IP = make_set(Destination_IP),        // Create a list of unique destination addresses 
+    Dest_IP = make_set(DestIPtoCheck),         // Create a list of unique destination addresses 
     FirstSeen = min(TimeGenerated),            // First time this source-dest pair was seen (on any port)
     LastSeen = max(TimeGenerated)              // Last time this source-dest pair was seen (on any port)
-    by Source_IP, Destination_IP, L7Protocol_s, FlowDirection_s, FlowStatus_s, NSGName_s
-| order by NSGName_s, Source_IP asc'''
+    by SrcIPtoCheck, DestIPtoCheck, L7Protocol_s, FlowDirection_s, FlowStatus_s, NSGName_s
+| order by NSGName_s, SrcIPtoCheck asc'''
         return kql_intranet.strip()
     
     elif query_type == "noninternet_nonintranet":
         # Non-Internet, Non-Intranet Traffic KQL: Find traffic that doesn't match either Internet or Intranet criteria
         kql_noninternet_nonintranet = fr'''
 //**Report 3 - Not Internet or Intranet Traffic**
-
-// *** DEFINE YOUR VNET RANGES HERE ***
 let VNetRanges = dynamic([
     "10.0.0.0/8",
     "172.16.0.0/12",
@@ -149,54 +150,53 @@ let VNetRanges = dynamic([
     // Add more VNet CIDR ranges in quotes, separated by commas
 ]);
 
-// Define the specific public ranges treated as internal
 let InternalExceptionRanges = dynamic([
-    # "1.1.0.0/16",
-    # "2.2.0.0/16"
+    // Add any internal exception CIDR ranges in quotes, separated by commas
 ]);
 
 // Helper function to check if an IP is in ANY of the VNet ranges
-let IsInVNet = (ip_string:string) {{
-    ipv4_is_in_any_range(ip_string, VNetRanges)
-}};
+let isInVNet = (ip:string) {{ ipv4_is_in_any_range(ip, VNetRanges) }};
 
 // Helper function to check if an IP is in ANY of the Exception ranges
-let IsInExceptionRange = (ip_string:string) {{
-    ipv4_is_in_any_range(ip_string, InternalExceptionRanges)
-}};
+let isInExceptionRange = (ip:string) {{ ipv4_is_in_any_range(ip, InternalExceptionRanges) }};
 
 // Main Query
 {table_name}
 | where TimeGenerated between (datetime('{start_time_str}') .. datetime('{end_time_str}'))
-| extend PublicSrcIPs = iif(isnotempty(SrcPublicIPs_s), split(SrcPublicIPs_s, ","), dynamic(["-"]))
-| extend PublicDestIPs = iif(isnotempty(DestPublicIPs_s), split(DestPublicIPs_s, ","), dynamic(["-"]))
-| mv-expand PublicSrcIP = tostring(split(iif(PublicSrcIPs[0] != "-", tostring(PublicSrcIPs[0]), "-"), "|")[0]) to typeof(string)
-| mv-expand PublicDestIP = tostring(split(iif(PublicDestIPs[0] != "-", tostring(PublicDestIPs[0]), "-"), "|")[0]) to typeof(string)
-| extend Source_IP = iif(isnotempty(SrcPublicIPs_s), PublicSrcIP, SrcIP_s)
-| extend Destination_IP = iif(isnotempty(DestPublicIPs_s), PublicDestIP, DestIP_s)
-
 | where SrcIP_s == "{target_ip}" or DestIP_s == "{target_ip}"
 
+// Process Source IPs
+| extend SrcIPtoCheck = SrcIP_s
+| extend SrcPublicIPsClean = extract_all(@"([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)", SrcPublicIPs_s)
+| extend SrcPublicIPtoCheck = iif(array_length(SrcPublicIPsClean) > 0, tostring(SrcPublicIPsClean[0]), "")
+| extend SrcIPtoCheck = iif(isnotempty(SrcPublicIPtoCheck), SrcPublicIPtoCheck, SrcIP_s)
+
+// Process Destination IPs
+| extend DestIPtoCheck = DestIP_s
+| extend DestPublicIPsClean = extract_all(@"([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)", DestPublicIPs_s)
+| extend DestPublicIPtoCheck = iif(array_length(DestPublicIPsClean) > 0, tostring(DestPublicIPsClean[0]), "")
+| extend DestIPtoCheck = iif(isnotempty(DestPublicIPtoCheck), DestPublicIPtoCheck, DestIP_s)
+
 // Filter: Source IP is in VNet
-| where IsInVNet(Source_IP)
+| where isInVNet(SrcIPtoCheck)
 
 // AND Destination IP meets the criteria:
 // (Is NEITHER Public AND NOT InternalExc) OR (Is in Exception Range)
-| where (IsInVNet(Destination_IP) == true and not(IsInExceptionRange(Destination_IP)))
-    or IsInExceptionRange(Destination_IP)
+| where (isInVNet(DestIPtoCheck) == true and not(isInExceptionRange(DestIPtoCheck)))
+    or isInExceptionRange(DestIPtoCheck)
 
-// ***Extract just the NSG name from the full ID***
+// Extract just the NSG name from the full ID
 | extend NSGName_s = tostring(split(NSGList_s, "/")[-1])
 
-// ***Summarize blocks***
+// Summarize blocks
 | summarize 
     SumFlows = count(),                        // Total flow log entries for this source-dest pair (across all ports)
     PortUsed = make_set(DestPort_d),           // Create a list of unique destination ports used
-    Dest_IP = make_set(Destination_IP),        // Create a list of unique destination addresses 
+    Dest_IP = make_set(DestIPtoCheck),         // Create a list of unique destination addresses 
     FirstSeen = min(TimeGenerated),            // First time this source-dest pair was seen (on any port)
     LastSeen = max(TimeGenerated)              // Last time this source-dest pair was seen (on any port)
-    by Source_IP, Destination_IP, L7Protocol_s, FlowDirection_s, FlowStatus_s, NSGName_s
-| order by NSGName_s, NSGName_s, Source_IP asc'''
+    by SrcIPtoCheck, DestIPtoCheck, L7Protocol_s, FlowDirection_s, FlowStatus_s, NSGName_s
+| order by NSGName_s, SrcIPtoCheck asc'''
         return kql_noninternet_nonintranet.strip()
     
     else:  # standard query type
