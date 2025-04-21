@@ -61,7 +61,7 @@ def generate_kql_query(target_ip: str,
     
     if internet_only:
         # Internet Only KQL: Exclude all flows where SrcIP or DestIP is in VNetRanges/InternalExceptionRanges, then select flows with any public IP value, and expand all public IPs.
-        kql_internet_only = f'''
+        kql_internet_only = fr'''
 let VNetRanges = dynamic([]);
 let InternalExceptionRanges = dynamic([]);
 let isInVNet = (ip:string) {{ ipv4_is_in_any_range(ip, VNetRanges) }};
