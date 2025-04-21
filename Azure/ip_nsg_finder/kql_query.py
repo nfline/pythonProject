@@ -110,9 +110,10 @@ let IsInVNet = (ip_string:string) {{
 
 {table_name}
 | where TimeGenerated between (datetime('{start_time_str}') .. datetime('{end_time_str}'))
-| extend PublicSrcIPs = split(iif(isnotempty(SrcPublicIPs_s), SrcPublicIPs_s, "-"), ",")
-| extend PublicDestIPs = split(iif(isnotempty(DestPublicIPs_s), DestPublicIPs_s, "-"), ",")
-| mv-expand PublicSrcIP = tostring(split(PublicSrcIPs, "|")[0]), PublicDestIP = tostring(split(PublicDestIPs, "|")[0])
+| extend PublicSrcIPs = iif(isnotempty(SrcPublicIPs_s), split(SrcPublicIPs_s, ","), dynamic(["-"]))
+| extend PublicDestIPs = iif(isnotempty(DestPublicIPs_s), split(DestPublicIPs_s, ","), dynamic(["-"]))
+| mv-expand PublicSrcIP = tostring(split(iif(PublicSrcIPs[0] != "-", tostring(PublicSrcIPs[0]), "-"), "|")[0]) to typeof(string)
+| mv-expand PublicDestIP = tostring(split(iif(PublicDestIPs[0] != "-", tostring(PublicDestIPs[0]), "-"), "|")[0]) to typeof(string)
 | extend Source_IP = iif(isnotempty(SrcPublicIPs_s), PublicSrcIP, SrcIP_s)
 | extend Destination_IP = iif(isnotempty(DestPublicIPs_s), PublicDestIP, DestIP_s)
 
@@ -167,9 +168,10 @@ let IsInExceptionRange = (ip_string:string) {{
 // Main Query
 {table_name}
 | where TimeGenerated between (datetime('{start_time_str}') .. datetime('{end_time_str}'))
-| extend PublicSrcIPs = split(iif(isnotempty(SrcPublicIPs_s), SrcPublicIPs_s, "-"), ",")
-| extend PublicDestIPs = split(iif(isnotempty(DestPublicIPs_s), DestPublicIPs_s, "-"), ",")
-| mv-expand PublicSrcIP = tostring(split(PublicSrcIPs, "|")[0]), PublicDestIP = tostring(split(PublicDestIPs, "|")[0])
+| extend PublicSrcIPs = iif(isnotempty(SrcPublicIPs_s), split(SrcPublicIPs_s, ","), dynamic(["-"]))
+| extend PublicDestIPs = iif(isnotempty(DestPublicIPs_s), split(DestPublicIPs_s, ","), dynamic(["-"]))
+| mv-expand PublicSrcIP = tostring(split(iif(PublicSrcIPs[0] != "-", tostring(PublicSrcIPs[0]), "-"), "|")[0]) to typeof(string)
+| mv-expand PublicDestIP = tostring(split(iif(PublicDestIPs[0] != "-", tostring(PublicDestIPs[0]), "-"), "|")[0]) to typeof(string)
 | extend Source_IP = iif(isnotempty(SrcPublicIPs_s), PublicSrcIP, SrcIP_s)
 | extend Destination_IP = iif(isnotempty(DestPublicIPs_s), PublicDestIP, DestIP_s)
 
