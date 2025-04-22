@@ -6,7 +6,7 @@ import subprocess
 import json
 import pandas as pd
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Optional, List, Any
+from typing import Dict, Optional, List, Any, Tuple
 
 from .common import print_info, print_error, print_success, print_warning, ensure_output_dir
 from .logging_utils import setup_logger
