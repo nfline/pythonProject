@@ -2,9 +2,36 @@
 
 ## Overview
 
-IP-NSG-Finder is a tool for analyzing Azure NSG (Network Security Group) flow logs to identify traffic patterns for a specific IP address. The tool can filter traffic based on different criteria, helping you understand network communications more effectively.
+IP-NSG-Finder is a tool for analyzing Azure NSG (Network Security Group) flow logs to identify traffic patterns for IP addresses. The tool can filter traffic based on different criteria and process multiple IPs simultaneously from an Excel file. Results can be merged into a single report for easier analysis.
 
-## Installation
+## Prerequisites and Installation
+
+### 1. Azure CLI Installation and Setup
+
+This tool requires Azure CLI to be installed and configured:
+
+1. **Install Azure CLI**:
+   - Windows: Download and run the installer from [Microsoft's official site](https://docs.microsoft.com/en-us/cli/azure/install-azure-cli-windows)
+   - macOS: `brew install azure-cli`
+   - Linux: Follow [distribution-specific instructions](https://docs.microsoft.com/en-us/cli/azure/install-azure-cli-linux)
+
+2. **Log in to Azure**:
+   ```bash
+   az login
+   ```
+   This will open a browser window for authentication. Follow the prompts to complete the login.
+
+3. **Select your subscription** (if you have multiple):
+   ```bash
+   az account set --subscription "Your Subscription Name"
+   ```
+
+4. **Install the Resource Graph Extension** (required for efficient NSG searches):
+   ```bash
+   az extension add --name resource-graph
+   ```
+
+### 2. Python Dependencies
 
 Ensure you have Python 3.6+ installed, then install the required dependencies:
 
@@ -12,23 +39,39 @@ Ensure you have Python 3.6+ installed, then install the required dependencies:
 pip install -r requirements.txt
 ```
 
+The required packages include:
+- pandas: For data processing and Excel file operations
+- openpyxl: For Excel file handling
+- ipaddress: For IP address validation and operations
+- python-dateutil: For date/time handling
+
 ## Basic Usage
 
-The basic command syntax is:
+The tool now supports both single IP analysis and batch processing from Excel files.
+
+### Single IP Analysis
 
 ```bash
 python -m ip_nsg_finder.main --ip <target_ip> [options]
 ```
 
-### Required Parameters
+### Batch Processing from Excel
 
+```bash
+python -m ip_nsg_finder.main --excel <excel_file_path> [options]
+```
+
+### Parameters
+
+#### Main Parameters
 - `--ip` or `-i`: Target IP address to analyze
+- `--excel` or `-e`: Excel file containing IP addresses to process
 
-### Optional Parameters
-
+#### Optional Parameters
 - `--time-range` or `-t`: Time range in hours to search (default: 24)
 - `--verbose` or `-v`: Enable verbose output
 - `--query-type`: Specify the type of traffic to analyze (standard, internet, intranet, noninternet_nonintranet)
+- `--individual-results`: Save individual Excel files for each IP (by default, only merged results are saved)
 
 ## Query Types Explained
 
@@ -147,9 +190,36 @@ Different queries apply different filtering logic:
 - Intranet query: Requires both IPs to be in VNet ranges
 - Edge Cases: Complex filtering based on combinations of ranges
 
+## Directory Structure
+
+The tool organizes output files in the following structure:
+
+```
+<current_working_directory>/
+├── report/               # All Excel report files
+│   └── individual/       # (Created only when using --individual-results)
+│
+└── log/                 # Logs and temporary files
+    ├── app/             # Application logs
+    └── temp/            # Temporary files (queries, JSON results)
+```
+
+## Excel Batch Processing
+
+When using the `--excel` parameter, the tool:
+
+1. Reads IP addresses from the specified Excel file (automatically detects columns containing IPs)
+2. Processes each IP address using the specified query type
+3. Merges results from all IPs into a single Excel file, sorted by time
+4. Creates summary sheets showing traffic counts by IP and NSG
+
+By default, individual Excel files for each IP are not saved. Use the `--individual-results` flag if you need separate files.
+
 ## Troubleshooting
 
 - If no results appear, check that your time range is appropriate
+- For Excel batch processing, ensure your Excel file has a column containing IP addresses
+- The __pycache__ directory created by Python can be safely deleted if needed
 - Verify that VNetRanges includes your organization's internal IP ranges
 - For Intranet queries, ensure VNetRanges is not empty
 - For Edge Cases queries with empty InternalExceptionRanges, results may overlap with Intranet query
