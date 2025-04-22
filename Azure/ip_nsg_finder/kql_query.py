@@ -220,7 +220,8 @@ let isInExceptionRange = (ip:string) {{ ipv4_is_in_any_range(ip, InternalExcepti
         return full_query.strip()
 
 def execute_kql_query(workspace_id: str, kql_query: str, target_ip: str, nsg_id: str, 
-                     timeout_seconds: int = 180, subscription_id: Optional[str] = None) -> Optional[Dict]:
+                     timeout_seconds: int = 180, subscription_id: Optional[str] = None,
+                     save_individual_excel: bool = True) -> Tuple[Optional[Dict], Optional[pd.DataFrame], Optional[str]]:
     """Execute a KQL query against a Log Analytics workspace, save results to Excel, and log execution."""
 
     # --- Logging Setup ---
@@ -266,7 +267,7 @@ def execute_kql_query(workspace_id: str, kql_query: str, target_ip: str, nsg_id:
     except IOError as e:
         logger.error(f"Failed to write temporary query file {temp_query_file}: {e}")
         print_error(f"Failed to write temporary query file {temp_query_file}: {e}")
-        return None
+        return None, None, None
 
     # Construct Azure CLI command
     # Use workspace short ID for the command
@@ -303,19 +304,19 @@ def execute_kql_query(workspace_id: str, kql_query: str, target_ip: str, nsg_id:
             stdout, stderr = process.communicate()
             logger.error(f"KQL query timed out after {cli_timeout} seconds!")
             print_error(f"KQL query timed out after {cli_timeout} seconds!")
-            return None
+            return None, None, None
         
         # Check the return code and handle errors
         if returncode != 0:
             logger.error(f"KQL query failed with error (code {returncode}): {stderr}")
             print_error(f"KQL query failed with error (code {returncode}): {stderr}")
-            return None
+            return None, None, None
         
         # Process successful result
         if not stdout.strip():
             logger.warning("KQL query returned no data")
             print_warning("KQL query returned no data")
-            return None
+            return None, None, None
         
         # Try to parse JSON result
         try:
@@ -352,15 +353,25 @@ def execute_kql_query(workspace_id: str, kql_query: str, target_ip: str, nsg_id:
                     # Reorder the DataFrame columns
                     df = df[ordered_columns]
                     
-                    excel_file = os.path.join(output_dir, f"query_results_{target_ip}_{nsg_name}_{timestamp}.xlsx")
-                    df.to_excel(excel_file, index=False, engine='openpyxl')
-                    logger.info(f"Saved query results to Excel: {excel_file}")
-                    print_success(f"Query results saved to Excel: {excel_file}")
+                    # Add target_ip and NSG columns for merged results context
+                    df['TargetIP'] = target_ip
+                    df['NSG'] = nsg_name
+                    
+                    excel_file = None
+                    if save_individual_excel:
+                        excel_file = os.path.join(output_dir, f"query_results_{target_ip}_{nsg_name}_{timestamp}.xlsx")
+                        df.to_excel(excel_file, index=False, engine='openpyxl')
+                        logger.info(f"Saved query results to Excel: {excel_file}")
+                        print_success(f"Query results saved to Excel: {excel_file}")
+                    
+                    return results, df, excel_file
                 except Exception as e:
-                    logger.error(f"Error saving results to Excel: {e}")
-                    print_error(f"Error saving results to Excel: {e}")
+                    logger.error(f"Error processing results: {e}")
+                    print_error(f"Error processing results: {e}")
+                    return results, None, None
             
-            return results
+            # No results to process
+            return results, None, None
             
         except json.JSONDecodeError as e:
             logger.error(f"Error parsing query results as JSON: {e}")
@@ -374,14 +385,14 @@ def execute_kql_query(workspace_id: str, kql_query: str, target_ip: str, nsg_id:
             logger.info(f"Saved raw non-JSON output to {raw_file}")
             print_info(f"Saved raw non-JSON output to {raw_file}")
             
-            return None
+            return None, None, None
             
     except Exception as e:
         logger.error(f"Unexpected error running KQL query: {e}")
         print_error(f"Unexpected error running KQL query: {e}")
         if process and process.poll() is None:
             process.kill()  # Ensure process is killed if it's still running
-        return None
+        return None, None, None
     finally:
         # Cleanup: remove temporary query file (optional)
         try:
