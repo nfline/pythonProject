@@ -225,14 +225,14 @@ def execute_kql_query(workspace_id: str, kql_query: str, target_ip: str, nsg_id:
     """Execute a KQL query against a Log Analytics workspace, save results to Excel, and log execution."""
 
     # --- Logging Setup ---
-    # Use dedicated subdirectories for different types of files
-    log_dir = ensure_output_dir("logs")
-    excel_dir = ensure_output_dir("excel")
-    temp_dir = ensure_output_dir("temp")
+    # Use new directory structure
+    app_log_dir = ensure_output_dir("log", "app")
+    temp_dir = ensure_output_dir("log", "temp")
+    report_dir = ensure_output_dir("report")
     
     # Log file name based on IP and Date
     log_file_name = f"query_log_{target_ip.replace('.', '_')}_{datetime.now().strftime('%Y%m%d')}.log"
-    log_file_path = os.path.join(log_dir, log_file_name)
+    log_file_path = os.path.join(app_log_dir, log_file_name)
     # Using file path is sufficient for logger name uniqueness
     logger = setup_logger(log_file_path)  # Setup ensures directory exists
 
@@ -359,7 +359,8 @@ def execute_kql_query(workspace_id: str, kql_query: str, target_ip: str, nsg_id:
                     
                     excel_file = None
                     if save_individual_excel:
-                        excel_file = os.path.join(excel_dir, f"query_results_{target_ip}_{nsg_name}_{timestamp}.xlsx")
+                        # If individual results requested, use main report directory
+                        excel_file = os.path.join(report_dir, f"query_results_{target_ip}_{nsg_name}_{timestamp}.xlsx")
                         df.to_excel(excel_file, index=False, engine='openpyxl')
                         logger.info(f"Saved query results to Excel: {excel_file}")
                         print_success(f"Query results saved to Excel: {excel_file}")

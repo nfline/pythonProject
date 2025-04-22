@@ -81,23 +81,43 @@ def ip_in_subnet(ip_address: str, subnet_prefix: str) -> bool:
         print_warning(f"Error parsing IP or subnet prefix '{subnet_prefix}': {str(e)}")
         return False
 
-def ensure_output_dir(subdir: str = None) -> str:
-    """Ensure the output directory exists and return its path.
+def ensure_output_dir(category: str = None, subdir: str = None) -> str:
+    """
+    Ensure output directory exists and return its path.
+    Now uses current working directory for report and log folders.
     
     Args:
-        subdir: Optional subdirectory within output dir (e.g., 'logs', 'excel', 'temp')
+        category: Main category ('report' or 'log')
+        subdir: Optional subdirectory within the category
         
     Returns:
-        Path to the requested output directory
+        Path to the requested directory
     """
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    output_dir = os.path.join(script_dir, "output")
-    os.makedirs(output_dir, exist_ok=True)
+    # Use current working directory as base
+    current_dir = os.getcwd()
     
+    # Default folder
+    if category is None or category not in ['report', 'log']:
+        # Backward compatibility - use 'output' in script dir
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        output_dir = os.path.join(script_dir, "output")
+        os.makedirs(output_dir, exist_ok=True)
+        
+        if subdir:
+            # Create specific subdirectory for backward compatibility
+            subdir_path = os.path.join(output_dir, subdir)
+            os.makedirs(subdir_path, exist_ok=True)
+            return subdir_path
+        return output_dir
+    
+    # Create main category directory in current working directory
+    category_dir = os.path.join(current_dir, category)
+    os.makedirs(category_dir, exist_ok=True)
+    
+    # If subdirectory is specified, create it too
     if subdir:
-        # Create specific subdirectory
-        subdir_path = os.path.join(output_dir, subdir)
+        subdir_path = os.path.join(category_dir, subdir)
         os.makedirs(subdir_path, exist_ok=True)
         return subdir_path
     
-    return output_dir
+    return category_dir

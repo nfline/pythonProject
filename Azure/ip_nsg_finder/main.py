@@ -36,8 +36,8 @@ def main():
     excel_file = args.excel
     
     # Setup logging using new directory structure
-    log_dir = ensure_output_dir("logs")
-    log_file_path = os.path.join(log_dir, f"ip_nsg_finder_{datetime.now().strftime('%Y%m%d')}.log")
+    app_log_dir = ensure_output_dir("log", "app")
+    log_file_path = os.path.join(app_log_dir, f"ip_nsg_finder_{datetime.now().strftime('%Y%m%d')}.log")
     logger = setup_logger(log_file_path)
     
     if verbose:
@@ -74,8 +74,18 @@ def main():
                 try:
                     # For Excel batch processing, always collect DataFrames for merging
                     # and only save individual files if requested with --individual-results
-                    result = analyze_traffic(ip, time_range_hours, logger, query_type=query_type, 
-                                          return_dataframe=True, save_individual_excel=args.individual_results)
+                    # 处理individual参数
+                    # 如果指定了individual_results参数，则保存单独的Excel文件
+                    if args.individual_results:
+                        # 为单独的Excel文件创建individual子目录
+                        individual_dir = ensure_output_dir("report", "individual")
+                        # 自定义保存路径
+                        result = analyze_traffic(ip, time_range_hours, logger, query_type=query_type, 
+                                              return_dataframe=True, save_individual_excel=True)
+                    else:
+                        # 不保存单独的Excel文件
+                        result = analyze_traffic(ip, time_range_hours, logger, query_type=query_type, 
+                                              return_dataframe=True, save_individual_excel=False)
                     if result is not None:
                         all_results.append(result)
                 except Exception as e:
@@ -104,9 +114,9 @@ def main():
                     # Create timestamp for the file
                     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
                     
-                    # Save merged results to excel subdirectory
-                    excel_dir = ensure_output_dir("excel")
-                    merged_file = os.path.join(excel_dir, f"merged_results_{query_type}_{timestamp}.xlsx")
+                    # Save merged results to report directory
+                    report_dir = ensure_output_dir("report")
+                    merged_file = os.path.join(report_dir, f"merged_results_{query_type}_{timestamp}.xlsx")
                     merged_df.to_excel(merged_file, index=False, engine='openpyxl')
                     
                     print_success(f"Merged results saved to: {merged_file}")
