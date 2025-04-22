@@ -5,6 +5,7 @@ import os
 import logging
 from datetime import datetime
 from typing import List, Dict, Optional, Any, Tuple
+import pandas as pd
 
 from .common import print_info, print_success, print_warning, print_error, ensure_output_dir
 from .find_nsgs import find_nsgs_by_ip
@@ -12,7 +13,9 @@ from .flow_logs import get_nsg_flow_logs_config, get_log_analytics_workspaces
 from .kql_query import generate_kql_query, execute_kql_query
 from .logging_utils import setup_logger
 
-def analyze_traffic(target_ip: str, time_range_hours: int = 24, logger: Optional[logging.Logger] = None, query_type: str = "standard") -> None:
+def analyze_traffic(target_ip: str, time_range_hours: int = 24, logger: Optional[logging.Logger] = None, 
+                 query_type: str = "standard", return_dataframe: bool = False, 
+                 save_individual_excel: bool = True) -> Optional[pd.DataFrame]:
     """
     Main analysis function: Finds NSGs, gets configs, generates and executes KQL queries.
     """
@@ -84,22 +87,27 @@ def analyze_traffic(target_ip: str, time_range_hours: int = 24, logger: Optional
             kql_query = generate_kql_query(target_ip, time_range_hours, nsg_id, query_type=query_type)
             
             # Execute the query
-            results = execute_kql_query(
+            raw_results, df, excel_file = execute_kql_query(
                 workspace_id=workspace_id,
                 kql_query=kql_query,
                 target_ip=target_ip,
                 nsg_id=nsg_id,
                 timeout_seconds=300,  # 5 minutes timeout
-                subscription_id=subscription_id  # Pass subscription ID to query execution
+                subscription_id=subscription_id,  # Pass subscription ID to query execution
+                save_individual_excel=save_individual_excel  # Control individual Excel file creation
             )
             
-            if results:
+            # Store results for logging and return value
+            if raw_results:
                 query_results[nsg_id] = {
                     'workspace_id': workspace_id,
-                    'results': results
+                    'results': raw_results,
+                    'dataframe': df
                 }
-                logger.info(f"Query for NSG '{nsg_name}' completed successfully with {len(results)} results")
-                print_success(f"Query for NSG '{nsg_name}' completed successfully with {len(results)} results")
+                logger.info(f"Query for NSG '{nsg_name}' completed successfully with {len(raw_results)} results")
+                
+                # Log success message
+                print_success(f"Query for NSG '{nsg_name}' completed successfully with {len(raw_results)} results")
             else:
                 all_queries_success = False
                 logger.warning(f"Query for NSG '{nsg_name}' failed or returned no results")
@@ -120,10 +128,22 @@ def analyze_traffic(target_ip: str, time_range_hours: int = 24, logger: Optional
             print_info("No query results were obtained")
         print_info(f"{'='*80}\n")
         
-        logger.info(f"Analysis completed for IP: {target_ip}")
-        return query_results
+        print_info(f"\nAnalysis completed! Check the 'output' directory for results")
         
+        # If requested, return the DataFrame for merging multiple IP results
+        if return_dataframe:
+            # Collect all DataFrames from all NSGs for this IP
+            all_dfs = []
+            for nsg_result in query_results.values():
+                if 'dataframe' in nsg_result and nsg_result['dataframe'] is not None:
+                    all_dfs.append(nsg_result['dataframe'])
+            
+            # If we found any DataFrames, merge them and return
+            if all_dfs:
+                return pd.concat(all_dfs, ignore_index=True)
+            return None
+
     except Exception as e:
-        logger.error(f"Analysis failed with error: {e}", exc_info=True)
-        print_error(f"Analysis failed with error: {e}")
+        logger.exception(f"Error in analysis: {e}")
+        print_error(f"Error in analysis: {e}")
         return None

@@ -5,22 +5,27 @@ import sys
 import os
 import argparse
 import logging
+import pandas as pd
 from datetime import datetime
 
-from .common import print_info, print_error, print_warning, ensure_output_dir
+from .common import print_info, print_error, print_warning, print_success, ensure_output_dir
 from .analyzer import analyze_traffic
 from .logging_utils import setup_logger
+from .excel_utils import read_ip_from_excel
 
 def main():
     """Main entry point for the script"""
     parser = argparse.ArgumentParser(description='Find NSGs and analyze flow logs for a specific IP address')
-    parser.add_argument('--ip', '-i', required=True, help='Target IP address to analyze')
+    parser.add_argument('--ip', '-i', help='Target IP address to analyze')
     parser.add_argument('--time-range', '-t', type=int, default=24, 
                         help='Time range in hours to query flow logs (default: 24)')
     parser.add_argument('--verbose', '-v', action='store_true', help='Enable verbose output')
     parser.add_argument('--query-type', choices=['standard', 'internet', 'intranet', 'noninternet_nonintranet'],
                         default='standard', help='Query type: standard (all traffic), internet (public IP traffic only),\n'
                         'intranet (VNet traffic only) or noninternet_nonintranet (edge cases)')
+    parser.add_argument('--excel', '-e', help='Excel file containing IP addresses to analyze')
+    parser.add_argument('--individual-results', action='store_true', 
+                        help='Save individual Excel files for each IP (default: only save merged results)')
     
     args = parser.parse_args()
     
@@ -28,6 +33,7 @@ def main():
     time_range_hours = args.time_range
     verbose = args.verbose
     query_type = args.query_type
+    excel_file = args.excel
     
     # Setup logging
     output_dir = ensure_output_dir()
@@ -46,8 +52,78 @@ def main():
         # Start analysis directly without checking CLI installation or login status
         print_info("Starting analysis...")
         
-        # Perform main analysis
-        analyze_traffic(target_ip, time_range_hours, logger, query_type=query_type)
+        # Check if we have an IP specified or need to read from Excel
+        if target_ip:
+            # Single IP analysis - always save individual Excel file
+            analyze_traffic(target_ip, time_range_hours, logger, query_type=query_type)
+        elif excel_file:
+            # Batch processing from Excel
+            ip_list = read_ip_from_excel(excel_file, logger)
+            
+            if not ip_list:
+                print_error("No valid IP addresses found to process")
+                sys.exit(1)
+            
+            print_info(f"Processing {len(ip_list)} IP addresses...")
+            
+            # Initialize storage for merged results
+            all_results = []
+            
+            # Process each IP address
+            for i, ip in enumerate(ip_list):
+                print_info(f"Processing IP {i+1}/{len(ip_list)}: {ip}")
+                logger.info(f"Processing IP {i+1}/{len(ip_list)}: {ip}")
+                try:
+                    # For Excel batch processing, always collect DataFrames for merging
+                    # and only save individual files if requested with --individual-results
+                    result = analyze_traffic(ip, time_range_hours, logger, query_type=query_type, 
+                                          return_dataframe=True, save_individual_excel=args.individual_results)
+                    if result is not None:
+                        all_results.append(result)
+                except Exception as e:
+                    logger.error(f"Error processing IP {ip}: {e}")
+                    print_error(f"Error processing IP {ip}: {e}")
+                    continue
+            
+            # Always create merged Excel file for batch processing
+            if all_results:
+                try:
+                    # Combine all DataFrames
+                    merged_df = pd.concat(all_results, ignore_index=True)
+                    
+                    # Create timestamp for the file
+                    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                    
+                    # Save merged results
+                    output_dir = ensure_output_dir()
+                    merged_file = os.path.join(output_dir, f"merged_results_{query_type}_{timestamp}.xlsx")
+                    merged_df.to_excel(merged_file, index=False, engine='openpyxl')
+                    
+                    print_success(f"Merged results saved to: {merged_file}")
+                    logger.info(f"Merged results saved to: {merged_file}")
+                    
+                    # Add a summary sheet with counts by IP
+                    with pd.ExcelWriter(merged_file, engine='openpyxl', mode='a') as writer:
+                        # Create a summary by IP
+                        summary = merged_df.groupby('TargetIP').size().reset_index()
+                        summary.columns = ['IP Address', 'Flow Count']
+                        summary.to_excel(writer, sheet_name='Summary', index=False)
+                        
+                        # Create a summary by NSG
+                        nsg_summary = merged_df.groupby(['TargetIP', 'NSG']).size().reset_index()
+                        nsg_summary.columns = ['IP Address', 'NSG', 'Flow Count']
+                        nsg_summary.to_excel(writer, sheet_name='NSG Summary', index=False)
+                        
+                    print_success(f"Added summary sheets to merged results")
+                    
+                except Exception as e:
+                    logger.error(f"Error creating merged Excel file: {e}")
+                    print_error(f"Error creating merged Excel file: {e}")
+                
+            print_info(f"Completed processing {len(ip_list)} IP addresses")
+        else:
+            print_error("No IP address specified. Please provide an IP with --ip or an Excel file with --excel")
+            sys.exit(1)
         
     except Exception as e:
         print_error(f"An unexpected error occurred: {e}")
