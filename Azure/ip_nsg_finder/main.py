@@ -35,10 +35,8 @@ def main():
     query_type = args.query_type
     excel_file = args.excel
     
-    # Setup logging
-    output_dir = ensure_output_dir()
-    log_dir = os.path.join(output_dir, "logs")
-    os.makedirs(log_dir, exist_ok=True)
+    # Setup logging using new directory structure
+    log_dir = ensure_output_dir("logs")
     log_file_path = os.path.join(log_dir, f"ip_nsg_finder_{datetime.now().strftime('%Y%m%d')}.log")
     logger = setup_logger(log_file_path)
     
@@ -91,12 +89,20 @@ def main():
                     # Combine all DataFrames
                     merged_df = pd.concat(all_results, ignore_index=True)
                     
+                    # Sort by time if TimeGenerated column exists
+                    if 'TimeGenerated' in merged_df.columns:
+                        # Convert to datetime if it's not already
+                        if not pd.api.types.is_datetime64_any_dtype(merged_df['TimeGenerated']):
+                            merged_df['TimeGenerated'] = pd.to_datetime(merged_df['TimeGenerated'])
+                        # Sort by TimeGenerated in descending order (newest first)
+                        merged_df.sort_values('TimeGenerated', ascending=False, inplace=True)
+                    
                     # Create timestamp for the file
                     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
                     
-                    # Save merged results
-                    output_dir = ensure_output_dir()
-                    merged_file = os.path.join(output_dir, f"merged_results_{query_type}_{timestamp}.xlsx")
+                    # Save merged results to excel subdirectory
+                    excel_dir = ensure_output_dir("excel")
+                    merged_file = os.path.join(excel_dir, f"merged_results_{query_type}_{timestamp}.xlsx")
                     merged_df.to_excel(merged_file, index=False, engine='openpyxl')
                     
                     print_success(f"Merged results saved to: {merged_file}")

@@ -225,9 +225,11 @@ def execute_kql_query(workspace_id: str, kql_query: str, target_ip: str, nsg_id:
     """Execute a KQL query against a Log Analytics workspace, save results to Excel, and log execution."""
 
     # --- Logging Setup ---
-    output_dir = ensure_output_dir()
-    log_dir = os.path.join(output_dir, "logs")
-    os.makedirs(log_dir, exist_ok=True)
+    # Use dedicated subdirectories for different types of files
+    log_dir = ensure_output_dir("logs")
+    excel_dir = ensure_output_dir("excel")
+    temp_dir = ensure_output_dir("temp")
+    
     # Log file name based on IP and Date
     log_file_name = f"query_log_{target_ip.replace('.', '_')}_{datetime.now().strftime('%Y%m%d')}.log"
     log_file_path = os.path.join(log_dir, log_file_name)
@@ -255,10 +257,8 @@ def execute_kql_query(workspace_id: str, kql_query: str, target_ip: str, nsg_id:
         workspace_short_id = workspace_id  # Assume it's already the short ID
 
     # Create a temporary file for the query
-    temp_query_dir = os.path.join(output_dir, "temp_queries")
-    os.makedirs(temp_query_dir, exist_ok=True)
     timestamp = datetime.now().strftime('%Y%m%d%H%M%S%f')
-    temp_query_file = os.path.join(temp_query_dir, f"temp_query_{target_ip}_{nsg_name}_{timestamp}.kql")
+    temp_query_file = os.path.join(temp_dir, f"temp_query_{target_ip}_{nsg_name}_{timestamp}.kql")
 
     try:
         with open(temp_query_file, 'w', encoding='utf-8') as f:
@@ -324,7 +324,7 @@ def execute_kql_query(workspace_id: str, kql_query: str, target_ip: str, nsg_id:
             logger.info(f"Query returned {len(results)} results")
             
             # Save raw results
-            results_file = os.path.join(output_dir, f"query_results_{target_ip}_{nsg_name}_{timestamp}.json")
+            results_file = os.path.join(temp_dir, f"query_results_{target_ip}_{nsg_name}_{timestamp}.json")
             with open(results_file, 'w', encoding='utf-8') as f:
                 json.dump(results, f, indent=2)
             logger.info(f"Saved raw query results to {results_file}")
@@ -359,7 +359,7 @@ def execute_kql_query(workspace_id: str, kql_query: str, target_ip: str, nsg_id:
                     
                     excel_file = None
                     if save_individual_excel:
-                        excel_file = os.path.join(output_dir, f"query_results_{target_ip}_{nsg_name}_{timestamp}.xlsx")
+                        excel_file = os.path.join(excel_dir, f"query_results_{target_ip}_{nsg_name}_{timestamp}.xlsx")
                         df.to_excel(excel_file, index=False, engine='openpyxl')
                         logger.info(f"Saved query results to Excel: {excel_file}")
                         print_success(f"Query results saved to Excel: {excel_file}")
@@ -379,7 +379,7 @@ def execute_kql_query(workspace_id: str, kql_query: str, target_ip: str, nsg_id:
             print_error(f"Error parsing query results as JSON: {e}")
             
             # Save raw output for debugging
-            raw_file = os.path.join(output_dir, f"raw_output_{target_ip}_{nsg_name}_{timestamp}.txt")
+            raw_file = os.path.join(temp_dir, f"raw_output_{target_ip}_{nsg_name}_{timestamp}.txt")
             with open(raw_file, 'w', encoding='utf-8') as f:
                 f.write(stdout)
             logger.info(f"Saved raw non-JSON output to {raw_file}")

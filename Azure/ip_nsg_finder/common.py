@@ -81,7 +81,23 @@ def ip_in_subnet(ip_address: str, subnet_prefix: str) -> bool:
         print_warning(f"Error parsing IP or subnet prefix '{subnet_prefix}': {str(e)}")
         return False
 
-def ensure_output_dir(base_dir: str = "output") -> str:
-    """Ensure output directory exists and return its path"""
-    os.makedirs(base_dir, exist_ok=True)
-    return base_dir
+def ensure_output_dir(subdir: str = None) -> str:
+    """Ensure the output directory exists and return its path.
+    
+    Args:
+        subdir: Optional subdirectory within output dir (e.g., 'logs', 'excel', 'temp')
+        
+    Returns:
+        Path to the requested output directory
+    """
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    output_dir = os.path.join(script_dir, "output")
+    os.makedirs(output_dir, exist_ok=True)
+    
+    if subdir:
+        # Create specific subdirectory
+        subdir_path = os.path.join(output_dir, subdir)
+        os.makedirs(subdir_path, exist_ok=True)
+        return subdir_path
+    
+    return output_dir

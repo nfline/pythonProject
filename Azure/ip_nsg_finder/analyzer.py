@@ -21,9 +21,7 @@ def analyze_traffic(target_ip: str, time_range_hours: int = 24, logger: Optional
     """
     # Create logger if not provided
     if logger is None:
-        output_dir = ensure_output_dir()
-        log_dir = os.path.join(output_dir, "logs")
-        os.makedirs(log_dir, exist_ok=True)
+        log_dir = ensure_output_dir("logs")
         log_file_path = os.path.join(log_dir, f"analysis_{target_ip.replace('.', '_')}_{datetime.now().strftime('%Y%m%d')}.log")
         logger = setup_logger(log_file_path)
     
