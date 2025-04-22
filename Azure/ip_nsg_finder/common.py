@@ -81,13 +81,13 @@ def ip_in_subnet(ip_address: str, subnet_prefix: str) -> bool:
         print_warning(f"Error parsing IP or subnet prefix '{subnet_prefix}': {str(e)}")
         return False
 
-def ensure_output_dir(category: str = None, subdir: str = None) -> str:
+def ensure_output_dir(category: str = 'log', subdir: str = None) -> str:
     """
     Ensure output directory exists and return its path.
-    Now uses current working directory for report and log folders.
+    Uses current working directory for report and log folders.
     
     Args:
-        category: Main category ('report' or 'log')
+        category: Main category ('report' or 'log'), defaults to 'log'
         subdir: Optional subdirectory within the category
         
     Returns:
@@ -96,19 +96,15 @@ def ensure_output_dir(category: str = None, subdir: str = None) -> str:
     # Use current working directory as base
     current_dir = os.getcwd()
     
-    # Default folder
-    if category is None or category not in ['report', 'log']:
-        # Backward compatibility - use 'output' in script dir
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        output_dir = os.path.join(script_dir, "output")
-        os.makedirs(output_dir, exist_ok=True)
+    # Validate and normalize category
+    if category not in ['report', 'log']:
+        # Default to 'log' if an invalid category is provided
+        print_warning(f"Invalid output directory category '{category}', defaulting to 'log'")
+        category = 'log'
         
-        if subdir:
-            # Create specific subdirectory for backward compatibility
-            subdir_path = os.path.join(output_dir, subdir)
-            os.makedirs(subdir_path, exist_ok=True)
-            return subdir_path
-        return output_dir
+    # For temp files and data, use log/temp as default location
+    if category == 'log' and subdir is None:
+        subdir = 'temp'
     
     # Create main category directory in current working directory
     category_dir = os.path.join(current_dir, category)

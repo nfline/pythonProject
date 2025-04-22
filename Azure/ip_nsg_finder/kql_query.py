@@ -359,11 +359,17 @@ def execute_kql_query(workspace_id: str, kql_query: str, target_ip: str, nsg_id:
                     
                     excel_file = None
                     if save_individual_excel:
-                        # If individual results requested, use main report directory
+                        # For single IP queries, use the report directory directly
+                        # For batch queries with --individual-results parameter, the individual subdirectory is handled in main.py
+                        # Here we just need to save the results to the report directory
                         excel_file = os.path.join(report_dir, f"query_results_{target_ip}_{nsg_name}_{timestamp}.xlsx")
                         df.to_excel(excel_file, index=False, engine='openpyxl')
                         logger.info(f"Saved query results to Excel: {excel_file}")
                         print_success(f"Query results saved to Excel: {excel_file}")
+                    
+                    # Add Excel file path to the results dictionary so it can be accessed in analyzer.py
+                    if excel_file:
+                        results['excel_path'] = excel_file
                     
                     return results, df, excel_file
                 except Exception as e:

@@ -15,7 +15,7 @@ from .common import (
 def get_nsg_flow_logs_config(nsg_ids: List[str], target_ip: str, subscription_id: Optional[str] = None) -> Dict[str, Dict]:
     """Get flow logs configuration for NSGs"""
     print_info("\nStep 4: Getting NSG flow logs configuration...")
-    output_dir = ensure_output_dir()
+    temp_dir = ensure_output_dir("log", "temp")
     flow_logs_config = {}
 
     for nsg_id in nsg_ids:
@@ -54,7 +54,7 @@ def get_nsg_flow_logs_config(nsg_ids: List[str], target_ip: str, subscription_id
                 config_data = flow_logs_list[0]
                 flow_logs_config[nsg_id] = config_data
                 print_success(f"Found flow logs configuration for NSG '{nsg_name}'. Enabled: {config_data.get('enabled')}")
-                save_json(config_data, os.path.join(output_dir, f"flow_logs_{nsg_name}_{target_ip}.json"))
+                save_json(config_data, os.path.join(temp_dir, f"flow_logs_{nsg_name}_{target_ip}.json"))
 
                 # Check if workspace ID is present
                 if not config_data.get('workspaceId'):
@@ -68,7 +68,7 @@ def get_nsg_flow_logs_config(nsg_ids: List[str], target_ip: str, subscription_id
 
     # Save all found flow logs configurations together
     if flow_logs_config:
-        save_json(flow_logs_config, os.path.join(output_dir, f"flow_logs_config_all_{target_ip}.json"))
+        save_json(flow_logs_config, os.path.join(temp_dir, f"flow_logs_config_all_{target_ip}.json"))
         print_success(f"Saved flow logs configuration summary for {len(flow_logs_config)} NSGs.")
     else:
         print_warning("No NSG flow logs configuration found for any provided NSG ID.")
@@ -79,7 +79,7 @@ def get_log_analytics_workspaces(flow_logs_config: Dict[str, Dict], target_ip: s
     """Extract Log Analytics workspace IDs from flow logs configuration"""
     print_info("\nStep 5: Extracting Log Analytics workspace information...")
     workspace_ids = {}  # Maps NSG ID to Workspace ID
-    output_dir = ensure_output_dir()
+    temp_dir = ensure_output_dir("log", "temp")
 
     for nsg_id, config in flow_logs_config.items():
         nsg_name = nsg_id.split('/')[-1]  # For logging
@@ -106,7 +106,7 @@ def get_log_analytics_workspaces(flow_logs_config: Dict[str, Dict], target_ip: s
 
     # Save workspace IDs mapping
     if workspace_ids:
-        save_json(workspace_ids, os.path.join(output_dir, f"workspace_ids_map_{target_ip}.json"))
+        save_json(workspace_ids, os.path.join(temp_dir, f"workspace_ids_map_{target_ip}.json"))
         print_success(f"Found {len(workspace_ids)} Log Analytics workspace IDs to query.")
     else:
         print_warning("No Log Analytics workspace IDs found to query.")

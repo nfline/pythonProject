@@ -16,7 +16,7 @@ def find_nsgs_by_ip(target_ip: str) -> Tuple[List[str], str]:
     """Find list of NSG IDs associated with an IP"""
     print_info(f"\nFinding NSGs associated with IP {target_ip}...")
     nsg_ids = []
-    output_dir = ensure_output_dir()
+    temp_dir = ensure_output_dir("log", "temp")
     subscription_id = None
 
     # 1. Find network interfaces directly using this IP
@@ -26,7 +26,7 @@ def find_nsgs_by_ip(target_ip: str) -> Tuple[List[str], str]:
 
     nics = run_command(nic_cmd)
     if nics and isinstance(nics, list):  # Ensure nics is a list
-        save_json(nics, os.path.join(output_dir, f"network_interfaces_{target_ip}.json"))
+        save_json(nics, os.path.join(temp_dir, f"network_interfaces_{target_ip}.json"))
         print_success(f"Found {len(nics)} network interfaces potentially associated with IP {target_ip}")
 
         # Extract subscription ID from the first NIC found
@@ -89,7 +89,7 @@ def find_nsgs_by_ip(target_ip: str) -> Tuple[List[str], str]:
                 subnet_details = run_command(subnet_cmd)
 
                 if subnet_details:
-                    save_json(subnet_details, os.path.join(output_dir, f"subnet_{subnet_name}_{target_ip}.json"))
+                    save_json(subnet_details, os.path.join(temp_dir, f"subnet_{subnet_name}_{target_ip}.json"))
 
                     # Extract NSG associated with the subnet
                     subnet_nsg = subnet_details.get('networkSecurityGroup', {})
@@ -111,7 +111,7 @@ def find_nsgs_by_ip(target_ip: str) -> Tuple[List[str], str]:
     # Save all unique NSG IDs found
     unique_nsg_ids = list(set(nsg_ids))  # Ensure uniqueness
     if unique_nsg_ids:
-        save_json(unique_nsg_ids, os.path.join(output_dir, f"nsg_ids_found_{target_ip}.json"))
+        save_json(unique_nsg_ids, os.path.join(temp_dir, f"nsg_ids_found_{target_ip}.json"))
         print_success(f"\nTotal unique NSGs potentially related to IP {target_ip}: {len(unique_nsg_ids)}")
         for i, nsg_id in enumerate(unique_nsg_ids):
             print(f"  {i+1}. {nsg_id}")

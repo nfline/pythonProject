@@ -126,19 +126,28 @@ def analyze_traffic(target_ip: str, time_range_hours: int = 24, logger: Optional
             print_info("No query results were obtained")
         print_info(f"{'='*80}\n")
         
-        print_info(f"\nAnalysis completed! Check the 'output' directory for results")
+        print_info(f"\nAnalysis completed! Check the 'report' directory for results")
         
         # If requested, return the DataFrame for merging multiple IP results
         if return_dataframe:
             # Collect all DataFrames from all NSGs for this IP
             all_dfs = []
+            excel_paths = []
+            
             for nsg_result in query_results.values():
                 if 'dataframe' in nsg_result and nsg_result['dataframe'] is not None:
                     all_dfs.append(nsg_result['dataframe'])
+                    # Collect Excel file paths
+                    if 'excel_path' in nsg_result and nsg_result['excel_path']:
+                        excel_paths.append(nsg_result['excel_path'])
             
             # If we found any DataFrames, merge them and return
             if all_dfs:
-                return pd.concat(all_dfs, ignore_index=True)
+                merged_df = pd.concat(all_dfs, ignore_index=True)
+                # Store Excel paths as an attribute for later reference
+                if excel_paths:
+                    merged_df.attrs['excel_paths'] = excel_paths
+                return merged_df
             return None
 
     except Exception as e:
