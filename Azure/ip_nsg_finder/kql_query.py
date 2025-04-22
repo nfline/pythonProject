@@ -128,15 +128,11 @@ let isInVNet = (ip:string) {{ ipv4_is_in_any_range(ip, VNetRanges) }};
 // Extract just the NSG name from the full ID
 | extend NSGName_s = tostring(split(NSGList_s, "/")[-1])
 
-// Summarize blocks
-| summarize 
-    SumFlows = count(),                        // Total flow log entries for this source-dest pair (across all ports)
-    PortUsed = make_set(DestPort_d),           // Create a list of unique destination ports used
-    Dest_IP = make_set(DestIPtoCheck),         // Create a list of unique destination addresses 
-    FirstSeen = min(TimeGenerated),            // First time this source-dest pair was seen (on any port)
-    LastSeen = max(TimeGenerated)              // Last time this source-dest pair was seen (on any port)
-    by SrcIPtoCheck, DestIPtoCheck, L7Protocol_s, FlowDirection_s, FlowStatus_s, NSGName_s
-| order by NSGName_s, SrcIPtoCheck asc'''
+// Adjust output format to match standard/internet query
+| extend SrcPublicIPsClean = iif(isnotempty(SrcPublicIPtoCheck), SrcPublicIPtoCheck, "")
+| extend DestPublicIPsClean = iif(isnotempty(DestPublicIPtoCheck), DestPublicIPtoCheck, "")
+| project TimeGenerated, FlowDirection_s, SrcIP_s, SrcPublicIPsClean, DestIP_s, DestPublicIPsClean, DestPort_d, FlowStatus_s, L7Protocol_s, InboundBytes_d, OutboundBytes_d, NSGList_s
+| order by TimeGenerated desc'''
         return kql_intranet.strip()
     
     elif query_type == "noninternet_nonintranet":
@@ -188,15 +184,11 @@ let isInExceptionRange = (ip:string) {{ ipv4_is_in_any_range(ip, InternalExcepti
 // Extract just the NSG name from the full ID
 | extend NSGName_s = tostring(split(NSGList_s, "/")[-1])
 
-// Summarize blocks
-| summarize 
-    SumFlows = count(),                        // Total flow log entries for this source-dest pair (across all ports)
-    PortUsed = make_set(DestPort_d),           // Create a list of unique destination ports used
-    Dest_IP = make_set(DestIPtoCheck),         // Create a list of unique destination addresses 
-    FirstSeen = min(TimeGenerated),            // First time this source-dest pair was seen (on any port)
-    LastSeen = max(TimeGenerated)              // Last time this source-dest pair was seen (on any port)
-    by SrcIPtoCheck, DestIPtoCheck, L7Protocol_s, FlowDirection_s, FlowStatus_s, NSGName_s
-| order by NSGName_s, SrcIPtoCheck asc'''
+// Adjust output format to match standard/internet query
+| extend SrcPublicIPsClean = iif(isnotempty(SrcPublicIPtoCheck), SrcPublicIPtoCheck, "")
+| extend DestPublicIPsClean = iif(isnotempty(DestPublicIPtoCheck), DestPublicIPtoCheck, "")
+| project TimeGenerated, FlowDirection_s, SrcIP_s, SrcPublicIPsClean, DestIP_s, DestPublicIPsClean, DestPort_d, FlowStatus_s, L7Protocol_s, InboundBytes_d, OutboundBytes_d, NSGList_s
+| order by TimeGenerated desc'''
         return kql_noninternet_nonintranet.strip()
     
     else:  # standard query type
