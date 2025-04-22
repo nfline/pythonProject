@@ -320,50 +320,21 @@ def execute_kql_query(workspace_id: str, kql_query: str, target_ip: str, nsg_id:
         
         # Try to parse JSON result
         try:
-            # Parse the JSON response
-            json_response = json.loads(stdout)
+            results = json.loads(stdout)
+            logger.info(f"Query returned {len(results)} results")
             
             # Save raw results
             results_file = os.path.join(temp_dir, f"query_results_{target_ip}_{nsg_name}_{timestamp}.json")
             with open(results_file, 'w', encoding='utf-8') as f:
-                json.dump(json_response, f, indent=2)
+                json.dump(results, f, indent=2)
             logger.info(f"Saved raw query results to {results_file}")
             
-            # Handle the Azure Log Analytics response format which has a specific structure
-            # The response typically has a 'tables' array, with each table having 'columns' and 'rows'
-            if 'tables' in json_response and len(json_response['tables']) > 0:
-                table = json_response['tables'][0]  # Get the first table
-                if 'columns' in table and 'rows' in table:
-                    columns = [col['name'] for col in table['columns']]
-                    rows = table['rows']
-                    
-                    # Now create the DataFrame with proper column names
-                    df = pd.DataFrame(rows, columns=columns)
-                    
-                    # Log the number of results found
-                    result_count = len(df) if not df.empty else 0
-                    logger.info(f"Query returned {result_count} results")
-                    
-                    # Store the processed results for return
-                    results = json_response
-                else:
-                    logger.warning("Query result does not contain expected 'columns' and 'rows' structure")
-                    print_warning("Query result structure is not as expected")
-                    return None, None, None
-            elif isinstance(json_response, list):
-                # For backward compatibility - handle if response is directly a list of records
-                df = pd.DataFrame(json_response)
-                result_count = len(df) if not df.empty else 0
-                logger.info(f"Query returned {result_count} results in list format")
-                results = json_response
-            else:
-                logger.warning("Query result does not have expected 'tables' structure or list format")
-                print_warning("Query result structure is not as expected")
-                return None, None, None
-                
-            # Try to process the DataFrame and save as Excel
-            if not df.empty:
+            # Try to convert to DataFrame and save as Excel
+            if results:
                 try:
+                    # Convert to DataFrame
+                    df = pd.DataFrame(results)
+                    
                     # Define expected column order based on KQL query in generate_kql_query
                     # This ensures the Excel file columns match the order in the query
                     expected_columns = [
@@ -388,27 +359,20 @@ def execute_kql_query(workspace_id: str, kql_query: str, target_ip: str, nsg_id:
                     
                     excel_file = None
                     if save_individual_excel:
-                        # For single IP queries, use the report directory directly
-                        # For batch queries with --individual-results parameter, the individual subdirectory is handled in main.py
-                        # Here we just need to save the results to the report directory
+                        # If individual results requested, use main report directory
                         excel_file = os.path.join(report_dir, f"query_results_{target_ip}_{nsg_name}_{timestamp}.xlsx")
                         df.to_excel(excel_file, index=False, engine='openpyxl')
                         logger.info(f"Saved query results to Excel: {excel_file}")
                         print_success(f"Query results saved to Excel: {excel_file}")
-                    
-                    # Add Excel file path to the results dictionary so it can be accessed in analyzer.py
-                    if excel_file:
-                        results['excel_path'] = excel_file
                     
                     return results, df, excel_file
                 except Exception as e:
                     logger.error(f"Error processing results: {e}")
                     print_error(f"Error processing results: {e}")
                     return results, None, None
-            else:
-                logger.warning("No rows found in query results")
-                print_warning("Query returned no rows")
-                return results, None, None
+            
+            # No results to process
+            return results, None, None
             
         except json.JSONDecodeError as e:
             logger.error(f"Error parsing query results as JSON: {e}")
