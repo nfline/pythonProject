@@ -93,7 +93,11 @@ def main():
                     if 'TimeGenerated' in merged_df.columns:
                         # Convert to datetime if it's not already
                         if not pd.api.types.is_datetime64_any_dtype(merged_df['TimeGenerated']):
-                            merged_df['TimeGenerated'] = pd.to_datetime(merged_df['TimeGenerated'])
+                            # Convert to datetime and remove timezone info to avoid Excel errors
+                            merged_df['TimeGenerated'] = pd.to_datetime(merged_df['TimeGenerated']).dt.tz_localize(None)
+                        elif merged_df['TimeGenerated'].dt.tz is not None:
+                            # If already datetime with timezone, remove the timezone
+                            merged_df['TimeGenerated'] = merged_df['TimeGenerated'].dt.tz_localize(None)
                         # Sort by TimeGenerated in descending order (newest first)
                         merged_df.sort_values('TimeGenerated', ascending=False, inplace=True)
                     
