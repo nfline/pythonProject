@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>买房租房对比收益计算器</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.2.3/dist/css/bootstrap.min.css">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <header class="text-center my-4">
+            <h1>买房租房对比收益计算器</h1>
+            <p class="lead">比较长期买房与租房的经济收益</p>
+        </header>
+
+        <div class="row">
+            <div class="col-md-5">
+                <div class="card">
+                    <div class="card-header bg-primary text-white">
+                        <h3 class="card-title">输入参数</h3>
+                    </div>
+                    <div class="card-body">
+                        <form id="calculatorForm">
+                            <div class="mb-3">
+                                <h4>房产信息</h4>
+                            </div>
+                            
+                            <div class="mb-3">
+                                <label for="homePrice" class="form-label">房屋价格 (元)</label>
+                                <input type="number" class="form-control" id="homePrice" value="3000000">
+                            </div>
+                            
+                            <div class="mb-3">
+                                <label for="downPaymentPercent" class="form-label">首付比例 (%)</label>
+                                <input type="number" class="form-control" id="downPaymentPercent" value="30">
+                            </div>
+                            
+                            <div class="mb-3">
+                                <label for="loanTerm" class="form-label">贷款期限 (年)</label>
+                                <input type="number" class="form-control" id="loanTerm" value="30">
+                            </div>
+                            
+                            <div class="mb-3">
+                                <label for="interestRate" class="form-label">贷款利率 (% 年利率)</label>
+                                <input type="number" step="0.01" class="form-control" id="interestRate" value="3.1">
+                            </div>
+                            
+                            <div class="mb-3">
+                                <h4>房屋拥有成本</h4>
+                            </div>
+                            
+                            <div class="mb-3">
+                                <label for="annualPropertyTax" class="form-label">房产税 (% 房价/年)</label>
+                                <input type="number" step="0.01" class="form-control" id="annualPropertyTax" value="0.5">
+                            </div>
+                            
+                            <div class="mb-3">
+                                <label for="annualInsurance" class="form-label">房屋保险 (% 房价/年)</label>
+                                <input type="number" step="0.01" class="form-control" id="annualInsurance" value="0.5">
+                            </div>
+                            
+                            <div class="mb-3">
+                                <label for="annualMaintenance" class="form-label">房屋维护费 (% 房价/年)</label>
+                                <input type="number" step="0.01" class="form-control" id="annualMaintenance" value="1">
+                            </div>
+                            
+                            <div class="mb-3">
+                                <label for="monthlyHoa" class="form-label">物业费 (元/月)</label>
+                                <input type="number" class="form-control" id="monthlyHoa" value="300">
+                            </div>
+                            
+                            <div class="mb-3">
+                                <h4>租房信息</h4>
+                            </div>
+                            
+                            <div class="mb-3">
+                                <label for="monthlyRent" class="form-label">月租金 (元)</label>
+                                <input type="number" class="form-control" id="monthlyRent" value="5000">
+                            </div>
+                            
+                            <div class="mb-3">
+                                <label for="annualRentIncrease" class="form-label">年租金增长率 (%)</label>
+                                <input type="number" step="0.01" class="form-control" id="annualRentIncrease" value="5">
+                            </div>
+                            
+                            <div class="mb-3">
+                                <h4>市场假设</h4>
+                            </div>
+                            
+                            <div class="mb-3">
+                                <label for="annualHomeAppreciation" class="form-label">房价年增长率 (%)</label>
+                                <input type="number" step="0.01" class="form-control" id="annualHomeAppreciation" value="3">
+                            </div>
+                            
+                            <div class="mb-3">
+                                <label for="investmentReturnRate" class="form-label">投资回报率 (%)</label>
+                                <input type="number" step="0.01" class="form-control" id="investmentReturnRate" value="7">
+                            </div>
+                            
+                            <div class="mb-3">
+                                <label for="timeHorizon" class="form-label">计算时长 (年)</label>
+                                <input type="number" class="form-control" id="timeHorizon" value="30">
+                            </div>
+                            
+                            <button type="submit" class="btn btn-primary w-100">计算</button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="col-md-7">
+                <div class="card">
+                    <div class="card-header bg-success text-white">
+                        <h3 class="card-title">计算结果</h3>
+                    </div>
+                    <div class="card-body">
+                        <div id="loadingIndicator" class="text-center" style="display: none;">
+                            <div class="spinner-border" role="status">
+                                <span class="visually-hidden">加载中...</span>
+                            </div>
+                            <p>计算中，请稍候...</p>
+                        </div>
+                        
+                        <div id="resultsContainer" style="display: none;">
+                            <div class="summary-box p-3 mb-4 bg-light rounded">
+                                <h4>结果摘要</h4>
+                                <div class="row">
+                                    <div class="col-md-6">
+                                        <p><strong>买房月供:</strong> <span id="monthlyMortgage"></span> 元</p>
+                                        <p><strong>买房总月支出:</strong> <span id="totalMonthlyCost"></span> 元</p>
+                                        <p><strong>起始月租金:</strong> <span id="initialMonthlyRent"></span> 元</p>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <p><strong>最终月租金:</strong> <span id="finalMonthlyRent"></span> 元</p>
+                                        <p><strong>买房总净值:</strong> <span id="finalNetWorthBuying"></span> 元</p>
+                                        <p><strong>租房总净值:</strong> <span id="finalNetWorthRenting"></span> 元</p>
+                                    </div>
+                                </div>
+                                <div id="breakEvenContainer" class="alert alert-info">
+                                    <p><strong>买房超过租房的盈亏平衡点:</strong> <span id="breakEvenYear"></span> 年</p>
+                                </div>
+                            </div>
+                            
+                            <ul class="nav nav-tabs" id="resultTabs" role="tablist">
+                                <li class="nav-item" role="presentation">
+                                    <button class="nav-link active" id="netWorth-tab" data-bs-toggle="tab" data-bs-target="#netWorth" type="button" role="tab" aria-selected="true">净资产对比</button>
+                                </li>
+                                <li class="nav-item" role="presentation">
+                                    <button class="nav-link" id="costs-tab" data-bs-toggle="tab" data-bs-target="#costs" type="button" role="tab" aria-selected="false">支出对比</button>
+                                </li>
+                                <li class="nav-item" role="presentation">
+                                    <button class="nav-link" id="homeDetails-tab" data-bs-toggle="tab" data-bs-target="#homeDetails" type="button" role="tab" aria-selected="false">房产详情</button>
+                                </li>
+                            </ul>
+                            
+                            <div class="tab-content mt-3" id="resultTabsContent">
+                                <div class="tab-pane fade show active" id="netWorth" role="tabpanel">
+                                    <div class="chart-container">
+                                        <canvas id="netWorthChart"></canvas>
+                                    </div>
+                                </div>
+                                <div class="tab-pane fade" id="costs" role="tabpanel">
+                                    <div class="chart-container">
+                                        <canvas id="costsChart"></canvas>
+                                    </div>
+                                </div>
+                                <div class="tab-pane fade" id="homeDetails" role="tabpanel">
+                                    <div class="chart-container">
+                                        <canvas id="homeDetailsChart"></canvas>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <footer class="mt-4 text-center">
+            <p>买房租房对比收益计算器 &copy; 2025</p>
+            <p><small>免责声明：本计算器仅供参考，不构成投资建议。请咨询专业人士进行具体决策。</small></p>
+        </footer>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.2.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="{{ url_for('static', filename='js/calculator.js') }}"></script>
+</body>
+</html>

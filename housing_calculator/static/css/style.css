@@ -1,0 +1,72 @@
+/* 买房租房对比收益计算器样式 */
+
+body {
+    font-family: 'Microsoft YaHei', sans-serif;
+    background-color: #f8f9fa;
+}
+
+.container {
+    max-width: 1200px;
+}
+
+.card {
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+    margin-bottom: 20px;
+}
+
+.card-header {
+    font-weight: bold;
+}
+
+.chart-container {
+    position: relative;
+    height: 350px;
+    margin-bottom: 20px;
+}
+
+.summary-box {
+    border: 1px solid #ddd;
+    border-left: 4px solid #28a745;
+}
+
+footer {
+    color: #6c757d;
+    padding: 20px 0;
+    border-top: 1px solid #eee;
+}
+
+label {
+    font-weight: 500;
+}
+
+h4 {
+    color: #343a40;
+    border-bottom: 1px solid #eee;
+    padding-bottom: 5px;
+    margin-top: 10px;
+}
+
+.form-control:focus {
+    border-color: #80bdff;
+    box-shadow: 0 0 0 0.2rem rgba(0, 123, 255, 0.25);
+}
+
+.btn-primary {
+    background-color: #007bff;
+    border-color: #007bff;
+}
+
+.btn-primary:hover {
+    background-color: #0069d9;
+    border-color: #0062cc;
+}
+
+.tab-content {
+    padding-top: 15px;
+}
+
+@media (max-width: 768px) {
+    .col-md-5, .col-md-7 {
+        margin-bottom: 20px;
+    }
+}
