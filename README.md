@@ -108,7 +108,7 @@ extrahop/
 Integration with the ThousandEyes monitoring platform, enabling data synchronization and host discovery.
 
 ```
-1000eyes/
+ThousandEyes/
 ├── 1000eyes_sync_azure.py  # ThousandEyes data synchronization to Azure
 └── search_host.py          # Host discovery and tracking
 ```
@@ -185,7 +185,7 @@ export THOUSANDEYES_TOKEN="your_token"
 export AZURE_STORAGE_CONNECTION_STRING="your_connection_string"
 
 # Run synchronization script
-python 1000eyes/1000eyes_sync_azure.py
+python ThousandEyes/1000eyes_sync_azure.py
 ```
 
 ### 4. WAF Management
