@@ -1,68 +1,61 @@
 <div align="center">
 
-# :shield: NetSecTools :shield:
+# NetSecTools
 
 <hr style="height:3px;border:none;background-color:#3498db;margin:20px 0">
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
-[![Maintained](https://img.shields.io/badge/Maintained%3F-yes-green.svg)](https://github.com/nfline/pythonProject/commits/master)
 
-**Professional network security and automation toolkit for network engineers and security professionals**
+**Network Security and Monitoring Toolkit for Network Engineers and Security Professionals**
 
 </div>
 
 <div align="center">
 
-[:clipboard: Overview](#clipboard-overview) •
-[:sparkles: Features](#sparkles-key-features) •
-[:file_folder: Structure](#file_folder-project-structure) •
-[:wrench: Installation](#wrench-installation) •
-[:rocket: Usage](#rocket-usage-examples) •
-[:puzzle_piece: Modules](#puzzle_piece-modules) •
-[:lock: Security](#lock-security-notes) •
-[:chart_with_upwards_trend: Compatibility](#chart_with_upwards_trend-compatibility) •
-[:scroll: License](#scroll-license)
+[Overview](#overview) •
+[Core Modules](#core-modules) •
+[Installation](#installation) •
+[Usage Examples](#usage-examples) •
+[License](#license)
 
 </div>
 
 ---
 
-## :clipboard: Overview
+## Overview
 
-NetSecTools is a comprehensive collection of Python tools designed for network engineers, security professionals, and IT administrators. The toolkit provides solutions for network monitoring, security assessment, and automation tasks, helping you efficiently manage and secure your network infrastructure.
+NetSecTools is a professional network security and monitoring toolkit designed to enhance network visibility, security assessment, and automation. This toolkit focuses on Azure cloud environments, network traffic analysis, web application firewall management, and advanced monitoring system integration.
 
 <div align="center">
 <table>
 <tr>
-<td align="center"><b>:mag: Monitoring</b></td>
-<td align="center"><b>:closed_lock_with_key: Security</b></td>
-<td align="center"><b>:gear: Automation</b></td>
-<td align="center"><b>:cloud: Cloud</b></td>
+<td align="center"><b>:cloud: Azure</b></td>
+<td align="center"><b>:bar_chart: ExtraHop</b></td>
+<td align="center"><b>:mag: ThousandEyes</b></td>
+<td align="center"><b>:shield: WAF</b></td>
 </tr>
 <tr>
 <td>
-• ThousandEyes integration<br>
-• Performance tracking<br>
-• Host discovery
+• NSG Flow Log Analysis<br>
+• IP-NSG Association Search<br>
+• Resource Monitoring
 </td>
 <td>
-• Shodan API integration<br>
-• ExtraHop analysis<br>
-• WAF management<br>
-• Network Security Group analysis
+• Device Group Management<br>
+• Bulk Tag Processing<br>
+• Traffic Analysis
 </td>
 <td>
-• System automation<br>
-• IP address management<br>
-• URL validation<br>
-• Financial calculators
+• Azure Data Synchronization<br>
+• Host Discovery<br>
+• Performance Monitoring
 </td>
 <td>
-• Azure traffic analysis<br>
-• NSG flow logs analysis<br>
-• Cloud resource monitoring<br>
-• Data synchronization
+• Application List Management<br>
+• Endpoint Configuration<br>
+• IP Protection Policies<br>
+• Cipher Suite Updates
 </td>
 </tr>
 </table>
@@ -70,94 +63,141 @@ NetSecTools is a comprehensive collection of Python tools designed for network e
 
 ---
 
-## :sparkles: Key Features
+## Core Modules
 
-<div>
+### :cloud: Azure Module
 
-- **:arrows_counterclockwise: Integrated Monitoring** – Connect ThousandEyes with Azure for comprehensive network visibility
-- **:shield: Security Assessment** – Leverage Shodan for external attack surface mapping and service detection
-- **:robot: Automation Tools** – Streamline repetitive tasks and improve operational efficiency
-- **:bar_chart: Network Analysis** – Utilize ExtraHop for deep packet inspection and traffic analytics
-- **:broom: WAF Management** – Configure and monitor web application firewalls
-- **:cloud: Cloud Integration** – Azure-focused tools for cloud resource management and analysis
-- **:wrench: Utility Tools** – Solve common networking challenges with purpose-built scripts
-- **:house: Financial Tools** – Practice project for buy vs. rent financial comparison calculator
-- **:iphone: Mobile Apps** – Practice iOS screen time management and parental control application
+Azure cloud environment management and monitoring tools for network security teams.
 
-</div>
+```
+azure/
+├── ip_nsg_finder/          # IP-based NSG query and flow analysis
+│   ├── main.py             # Main program entry
+│   ├── analyzer.py         # Core analysis engine
+│   ├── find_nsgs.py        # NSG search functionality
+│   ├── flow_logs.py        # Flow log processing
+│   └── kql_query.py        # KQL query generation and execution
+└── nsgv2/                  # NSG management tools (upgraded version)
+```
+
+**Key Features**:
+- Automatic discovery of Network Security Groups (NSGs) associated with IP addresses
+- Extraction and analysis of NSG flow log configurations
+- Generation of optimized KQL queries
+- Output of analysis reports in JSON and Excel formats
+
+### :bar_chart: ExtraHop Module
+
+Automated management tools integrating with the ExtraHop network performance monitoring platform.
+
+```
+extrahop/
+├── device-group.py      # Device group management tool
+├── tag.py               # Tag system management
+└── README.md            # Module documentation
+```
+
+**Key Features**:
+- Secure communication with ExtraHop API using OAuth2 authentication
+- Bulk processing of device groups and tags
+- High-performance concurrent batch processing of large device sets
+- Memory optimization and error recovery mechanisms
+
+### :mag: ThousandEyes Module
+
+Integration with the ThousandEyes monitoring platform, enabling data synchronization and host discovery.
+
+```
+1000eyes/
+├── 1000eyes_sync_azure.py  # ThousandEyes data synchronization to Azure
+└── search_host.py          # Host discovery and tracking
+```
+
+**Key Features**:
+- Automatic synchronization of ThousandEyes monitoring data to Azure storage
+- Integration with Azure AD user management
+- Host discovery and tracking capabilities
+
+### :shield: WAF Module
+
+Web Application Firewall management tools for configuring and monitoring WAF policies.
+
+```
+waf/
+├── get_application_list.py     # Retrieve WAF application list
+├── get_endpoint.py             # Get endpoint details
+├── get_ip_protection.py        # IP protection policy management
+├── update_endpoint_addnewcipher.py  # Add new cipher suites
+└── update_endpoint_replaceexsitcipher.py  # Replace existing cipher suites
+```
+
+**Key Features**:
+- Automated WAF application management
+- IP protection policy configuration
+- Endpoint cipher suite management
+- Bulk updates and configuration adjustments
 
 ---
 
-## :file_folder: Project Structure
-
-```
-netsectools/
-│
-├── :mag: 1000eyes/              # ThousandEyes monitoring tools
-│   ├── 1000eyes_sync_azure.py   # ThousandEyes data synchronization to Azure
-│   └── search_host.py           # Host discovery and tracking
-│
-├── :closed_lock_with_key: security/             
-│   ├── extrahop/              # Network traffic analysis
-│   │   ├── device-group.py      # Device grouping functionality
-│   │   ├── tag.py               # ExtraHop tagging system
-│   │   └── README.md            # ExtraHop module documentation
-│   │
-│   ├── shodan/               # Shodan API integration
-│   │   ├── search_host.py       # Host information lookup
-│   │   └── test.txt             # Shodan query test data
-│   │
-│   └── waf/                  # Web Application Firewall tools
-│       ├── get_application_list.py    # List WAF applications
-│       ├── get_endpoint.py            # Retrieve endpoint details
-│       ├── get_ip_protection.py       # IP protection settings
-│       └── update_endpoint_*.py       # Endpoint management tools
-│
-├── :house: housing_calculator/   # Buy vs. Rent calculator (PRACTICE PROJECT)
-│   ├── app.py                 # Flask application entry
-│   ├── static/                # CSS and JavaScript files
-│   └── templates/             # HTML templates
-│
-├── :iphone: ios/                 # iOS screen time app (PRACTICE PROJECT)
-│   ├── AppDelegate.swift      # Application delegate
-│   ├── ScreenTimeManager.swift # Screen time management
-│   ├── ParentControlViewController.swift # Parental control view
-│   └── UsageReportViewController.swift  # Usage report view
-│
-├── :cloud: azure/                # Azure cloud integration
-│   ├── ip_nsg_finder/           # IP NSG finder and flow log analysis tool
-│   │   ├── main.py              # Main program entry
-│   │   ├── analyzer.py          # Core analysis engine
-│   │   ├── find_nsgs.py         # NSG search functionality
-│   │   ├── flow_logs.py         # Flow log processing
-│   │   └── kql_query.py         # KQL query generation and execution
-│   └── nsgv2/                   # NSG management tools (upgraded version)
-│
-└── :toolbox: tools/             # General utility scripts
-    ├── gethostname.py         # Hostname resolution utility
-    ├── splunk search          # Splunk query tools
-    └── url_validator.py       # URL validation and testing
-```
-
----
-
-## :wrench: Installation
+## Installation
 
 ```bash
-# Clone the repository
-git clone https://github.com/nfline/pythonProject.git
-cd pythonProject
-
-# Set up a virtual environment (recommended)
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install dependencies
+# Install required dependencies
 pip install -r requirements.txt
 
 # Configure environment variables
 cp .env.example .env
-# Edit .env with your API keys and configuration
+
+# Edit .env file with necessary API keys and configurations
+```
+
+## Usage Examples
+
+### 1. IP NSG Finder
+
+Find Azure NSGs associated with a specific IP address and analyze flow logs.
+
+```bash
+# Login to Azure CLI
+az login
+
+# Run query analysis
+python -m azure.ip_nsg_finder.main --ip <target_IP_address> --time-range 24 --verbose
+```
+
+### 2. ExtraHop Device Management
+
+Bulk update ExtraHop device groups from tabular data.
+
+```python
+# Prepare Excel file with device information
+# Run the update script
+python extrahop/device-group.py
+```
+
+### 3. ThousandEyes Data Synchronization
+
+Synchronize ThousandEyes monitoring data to Azure storage.
+
+```python
+# Set environment variables
+export THOUSANDEYES_TOKEN="your_token"
+export AZURE_STORAGE_CONNECTION_STRING="your_connection_string"
+
+# Run synchronization script
+python 1000eyes/1000eyes_sync_azure.py
+```
+
+### 4. WAF Management
+
+View and manage WAF policy configurations.
+
+```python
+# Get WAF application list
+python waf/get_application_list.py
+
+# Update endpoint cipher suites
+python waf/update_endpoint_addnewcipher.py
 ```
 
 ---
@@ -240,108 +280,37 @@ python tools/url_validator.py
 
 ---
 
-## :puzzle_piece: Modules
+## Project Structure
 
-<details open>
-<summary><b>:mag: ThousandEyes Monitoring Module</b></summary>
+```
+NetSecTools/
+├── azure/                # Azure cloud integration tools
+│   ├── ip_nsg_finder/      # IP-NSG association analysis tool
+│   └── nsgv2/              # NSG management tools (upgraded version)
+├── extrahop/             # ExtraHop network analysis tools
+├── 1000eyes/             # ThousandEyes monitoring integration
+├── waf/                  # Web Application Firewall management
+├── tools/                # Utility toolkit
+├── housing_calculator/    # Buy vs. Rent calculator (PRACTICE PROJECT)
+└── ios/                  # iOS screen time management (PRACTICE PROJECT)
+```
 
-Tools for network monitoring and performance tracking:
+## Development Environment
 
-- **ThousandEyes Integration**: Synchronize monitoring data with Azure
-- **Host Search**: Find and track network assets
-</details>
-
-<details>
-<summary><b>:closed_lock_with_key: Security Module</b></summary>
-
-Tools for security assessment and threat detection:
-
-- **Shodan Integration**: External attack surface mapping
-- **ExtraHop Analysis**: Network traffic inspection and analysis
-- **WAF Management**: Web application firewall configuration
-- **NSG Flow Log Analysis**: Azure Network Security Group traffic analysis
-</details>
-
-<details>
-<summary><b>:house: Financial Tools Module</b></summary>
-
-(Practice project) Financial analysis and decision support tools:
-
-- **Buy vs. Rent Calculator**: Long-term financial planning and analysis
-- **Investment Return Analysis**: Comparison of different housing investment returns
-</details>
-
-<details>
-<summary><b>:iphone: iOS Application Module</b></summary>
-
-(Practice project) iOS application development:
-
-- **Screen Time Management**: Tool based on Apple's Screen Time API
-- **Parental Controls**: Application usage control for parents
-- **Usage Reports**: Detailed analysis of application usage
-</details>
-
-<details>
-<summary><b>:cloud: Azure Module</b></summary>
-
-Azure cloud management tools:
-
-- **Traffic Analyzer**: Monitor and analyze Azure network traffic
-- **IP NSG Finder**: Find NSGs associated with specific IP addresses and analyze flow logs
-- **Resource Management**: Track and optimize Azure resources
-</details>
-
-<details>
-<summary><b>:toolbox: Utility Tools</b></summary>
-
-General-purpose network utilities:
-
-- **URL Validator**: Check URL accessibility
-- **Hostname Resolver**: DNS and hostname tools
-- **Splunk Integration**: Query and analyze Splunk data
-</details>
-
----
-
-## :lock: Security Notes
-
-- :key: Store API keys and credentials as environment variables
-- :eyes: Review code before executing in production environments
-- :closed_lock_with_key: Follow the principle of least privilege when configuring API access
-- :arrows_counterclockwise: Regularly update dependencies to patch security vulnerabilities
-
----
-
-## :chart_with_upwards_trend: Compatibility
-
-- Python 3.8 or higher
+- Python 3.8+
 - Compatible with Windows, macOS, and Linux
-- Requires appropriate API access for ThousandEyes, Shodan, Azure, and other services
+- Requires API access: ThousandEyes, ExtraHop, Azure, WAF
 
 ---
 
-## :scroll: License
+## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ---
 
-## :bust_in_silhouette: Author
-
 <div align="center">
 
-**nfline** - Network Security Engineer
-
-[![GitHub](https://img.shields.io/badge/GitHub-nfline-181717?style=flat&logo=github)](https://github.com/nfline)
-
-</div>
-
----
-
-<div align="center">
-
-**Made with ❤️ for network security professionals**
-
-If you find this toolkit useful, please consider giving it a star ⭐
+**Built for network security professionals to enhance efficiency and visibility**
 
 </div>
