@@ -114,6 +114,12 @@ netsectools/
 │
 ├── :cloud: Azure/                # Azure cloud integration
 │   ├── azure_traffic_analyzer.py   # Traffic analysis for Azure
+│   ├── ip_nsg_finder/           # IP NSG查找与流日志分析工具
+│   │   ├── main.py              # 主程序入口
+│   │   ├── analyzer.py          # 核心分析引擎
+│   │   ├── find_nsgs.py         # NSG查找功能
+│   │   ├── flow_logs.py         # 流日志处理
+│   │   └── kql_query.py         # KQL查询生成与执行
 │   └── README.md                   # Azure module documentation
 │
 └── :toolbox: tools/                # General utility scripts
@@ -189,6 +195,18 @@ python Azure/azure_traffic_analyzer.py
 </details>
 
 <details>
+<summary><b>IP NSG Finder</b></summary>
+
+```bash
+# 登录Azure CLI
+az login
+
+# 运行IP NSG Finder工具
+python -m ip_nsg_finder.main --ip <目标IP地址> [--time-range <小时数>] [--verbose]
+```
+</details>
+
+<details>
 <summary><b>URL Validation</b></summary>
 
 ```python
@@ -235,6 +253,7 @@ Tools to automate routine tasks:
 Tools for Azure cloud management:
 
 - **Traffic Analyzer**: Monitor and analyze Azure network traffic
+- **IP NSG Finder**: 查找与特定IP关联的NSG并分析流日志数据
 - **Resource Management**: Track and optimize Azure resources
 </details>
 
