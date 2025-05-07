@@ -28,7 +28,7 @@
 
 ## Overview
 
-NetSecTools is a professional toolkit for network security engineers, focusing on cloud security, traffic analysis, automated monitoring, and security policy management. It integrates with Azure, ExtraHop, ThousandEyes, and WAF platforms, providing end-to-end automation and visibility.
+NetSecTools demonstrates professional-grade network security automation capabilities, showcasing expertise in cloud security, traffic analysis, monitoring, and security policy management. This toolkit integrates with enterprise platforms such as Azure, ExtraHop, ThousandEyes, and WAF systems to deliver end-to-end automation solutions for security operations teams.
 
 ---
 
@@ -93,7 +93,7 @@ cd NetSecTools
 pip install -r requirements.txt
 
 # Copy and configure environment variables
-cp .env.example .env
+cp env.example .env
 # Edit .env with your API keys and credentials
 ```
 
@@ -133,8 +133,8 @@ python waf/get_application_list.py
 ## Development Environment
 
 - Python 3.8+
-- OS: Windows, macOS, Linux
-- API access required: Azure, ExtraHop, ThousandEyes, WAF
+- Compatible with: Windows, macOS, Linux
+- Enterprise integration with: Azure, ExtraHop, ThousandEyes, WAF platforms
 
 ---
 
@@ -146,7 +146,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 <div align="center">
 
-**Built for network security professionals to enhance efficiency and visibility**
+**Built for enterprise network security operations to enhance efficiency and visibility**
 
 </div>
 </div>
