@@ -1,4 +1,4 @@
-# Byte-compiled / optimized / DLL files
+# Python bytecode
 __pycache__/
 *.py[cod]
 *$py.class
@@ -36,7 +36,7 @@ MANIFEST
 pip-log.txt
 pip-delete-this-directory.txt
 
-# Unit test / coverage reports
+# Unit tests / coverage reports
 htmlcov/
 .tox/
 .nox/
@@ -51,25 +51,60 @@ coverage.xml
 .pytest_cache/
 cover/
 
-# Translations
-*.mo
-*.pot
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
 
-# Django stuff:
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+*.iml
+
+# Temporary files
+*.tmp
+*.bak
 *.log
-local_settings.py
-db.sqlite3
-db.sqlite3-journal
 
-# Flask stuff:
-instance/
-.webassets-cache
+# Sensitive information
+*_key.txt
+*_token.txt
+*credentials*
+*apikey*
+*secret*
+config.ini
+config.json
+settings.json
 
-# Scrapy stuff:
-.scrapy
+# Project data files
+*.xlsx
+*.csv
+*.db
+*.sqlite
 
-# Sphinx documentation
-docs/_build/
+# Module specific outputs
+ThousandEyes/data/
+azure/logs/
+extrahop/device.xlsx
+waf/applications.xlsx
+shodan/ips.xlsx
+shodan/shodan_results.xlsx
+*report*
+*report*/
+*output*/
+*results*/
+*scan*
+*/temp/*
+
+# Keep test examples
+!test_examples/*
 
 # PyBuilder
 .pybuilder/
@@ -119,15 +154,6 @@ celerybeat.pid
 # SageMath parsed files
 *.sage.py
 
-# Environments
-.env
-.venv
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
-
 # Spyder project settings
 .spyderproject
 .spyproject
@@ -152,7 +178,19 @@ dmypy.json
 # Cython debug symbols
 cython_debug/
 
-# API keys and sensitive information
+# Project specific
+*.xlsx
+*.csv
 *_key.txt
 *_token.txt
 *credentials*
+*apikey*
+*.log
+
+# Module specific
+ThousandEyes/data/
+azure/logs/
+extrahop/device.xlsx
+waf/applications.xlsx
+shodan/ips.xlsx
+shodan/shodan_results.xlsx

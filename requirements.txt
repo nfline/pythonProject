@@ -9,12 +9,10 @@ azure-identity>=1.12.0
 
 # Network tools
 shodan>=1.28.0
-scapy>=2.5.0
+socket>=0.0.0
 
-# Automation tools
-pyautogui>=0.9.53
-keyboard>=0.13.5
-schedule>=1.1.0
+# API clients
+requests-oauthlib>=1.3.1
 
 # Data processing
 xlsxwriter>=3.0.9
@@ -23,3 +21,12 @@ openpyxl>=3.1.2
 # Utilities
 python-dotenv>=1.0.0
 tenacity>=8.2.2
+urllib3>=1.26.15
+
+# Only for specific modules (consider separating if not commonly used)
+# Uncomment if using these modules
+# pyautogui>=0.9.53
+# keyboard>=0.13.5
+# schedule>=1.1.0
+# scapy>=2.5.0
+# psutil>=5.9.0
