@@ -1,6 +1,7 @@
 import logging
 import requests
 import pandas as pd
+import numpy as np
 import keyring
 import getpass
 import os
@@ -33,12 +34,39 @@ def create_session():
     session.verify = False
     return session
 
+def is_null_or_nan(value):
+    """Safely check if a value is null, NaN, or empty"""
+    try:
+        if value is None:
+            return True
+        if hasattr(value, 'item'):
+            value = value.item()
+        if isinstance(value, float) and np.isnan(value):
+            return True
+        if str(value).strip().lower() in ['nan', 'none', '']:
+            return True
+        return False
+    except:
+        return True
+
+def safe_convert_to_string(value):
+    """Safely convert a pandas/numpy value to string"""
+    try:
+        if is_null_or_nan(value):
+            return None
+        if hasattr(value, 'item'):
+            value = value.item()
+        result = str(value).strip()
+        if result.lower() in ['nan', 'none', '']:
+            return None
+        return result
+    except:
+        return None
+
 def clean_server_pools(server_pools):
     """Clean server pools data to handle NaN values for JSON compliance"""
     def clean_value(value):
-        if pd.isna(value):
-            return None
-        elif isinstance(value, float) and (pd.isna(value) or value != value):
+        if is_null_or_nan(value):
             return None
         return value
     
@@ -62,51 +90,25 @@ def clean_server_pools(server_pools):
     return cleaned
 
 def update_server_pool(session, ep_id, origin_ip, backup_ip):
-    # Convert all pandas values to Python scalars first
-    try:
-        ep_id = ep_id.item() if hasattr(ep_id, 'item') else ep_id
-    except:
-        pass
+    # Safely convert all values
+    ep_id_str = safe_convert_to_string(ep_id)
+    origin_ip_str = safe_convert_to_string(origin_ip)
+    backup_ip_str = safe_convert_to_string(backup_ip)
     
-    try:
-        origin_ip = origin_ip.item() if hasattr(origin_ip, 'item') else origin_ip
-    except:
-        pass
-        
-    try:
-        backup_ip = backup_ip.item() if hasattr(backup_ip, 'item') else backup_ip
-    except:
-        pass
-    
-    # Handle NaN values in input and convert to scalar values
-    if pd.isna(ep_id):
-        logging.warning("EP ID is NaN, skipping")
+    # Check if EP ID is valid
+    if ep_id_str is None:
+        logging.warning("EP ID is null/NaN, skipping")
         return
-    
-    # Convert values to strings and handle NaN
-    try:
-        origin_ip = None if pd.isna(origin_ip) else str(origin_ip).strip()
-        if origin_ip == 'nan' or origin_ip == '':
-            origin_ip = None
-    except:
-        origin_ip = None
-        
-    try:
-        backup_ip = None if pd.isna(backup_ip) else str(backup_ip).strip()
-        if backup_ip == 'nan' or backup_ip == '':
-            backup_ip = None
-    except:
-        backup_ip = None
     
     # Check if we have any valid IPs
-    has_origin = origin_ip is not None and origin_ip != ''
-    has_backup = backup_ip is not None and backup_ip != ''
+    has_origin = origin_ip_str is not None
+    has_backup = backup_ip_str is not None
     
     if not has_origin and not has_backup:
-        logging.warning(f"No valid IPs for {ep_id}, skipping")
+        logging.warning(f"No valid IPs for {ep_id_str}, skipping")
         return
     
-    formatted_ep_id = str(ep_id).zfill(10)
+    formatted_ep_id = ep_id_str.zfill(10)
     url = BASE_URL_TEMPLATE.format(formatted_ep_id)
     
     try:
@@ -116,25 +118,25 @@ def update_server_pool(session, ep_id, origin_ip, backup_ip):
 
         server_pools = config.get("server_pools", [])
         if not server_pools:
-            logging.warning(f"No server pools found for {ep_id}")
+            logging.warning(f"No server pools found for {ep_id_str}")
             return
 
         pool = server_pools[0]
         existing_servers = pool.setdefault("server_list", [])
 
         # Add origin if missing and valid
-        if has_origin and not any(s.get("addr") == origin_ip for s in existing_servers):
+        if has_origin and not any(s.get("addr") == origin_ip_str for s in existing_servers):
             existing_servers.append({
-                "addr": origin_ip,
+                "addr": origin_ip_str,
                 "port": 80,
                 "backup": False,
                 "enabled": True
             })
 
         # Add backup if missing and valid
-        if has_backup and not any(s.get("addr") == backup_ip for s in existing_servers):
+        if has_backup and not any(s.get("addr") == backup_ip_str for s in existing_servers):
             existing_servers.append({
-                "addr": backup_ip,
+                "addr": backup_ip_str,
                 "port": 80,
                 "backup": True,
                 "enabled": True
@@ -149,19 +151,19 @@ def update_server_pool(session, ep_id, origin_ip, backup_ip):
         # Send update
         update_response = session.put(url, json={"server_pools": cleaned_server_pools})
         update_response.raise_for_status()
-        logging.info(f"Updated {ep_id} with origin ({origin_ip}) and backup ({backup_ip})")
-        print(f"✓ Updated {ep_id}")
+        logging.info(f"Updated {ep_id_str} with origin ({origin_ip_str}) and backup ({backup_ip_str})")
+        print(f"✓ Updated {ep_id_str}")
 
     except requests.exceptions.HTTPError as e:
         if e.response.status_code == 400:
-            logging.error(f"Bad Request for {ep_id}: {e.response.text}")
-            print(f"✗ Bad Request for {ep_id} - check data format")
+            logging.error(f"Bad Request for {ep_id_str}: {e.response.text}")
+            print(f"✗ Bad Request for {ep_id_str} - check data format")
         else:
-            logging.error(f"HTTP {e.response.status_code} for {ep_id}: {str(e)}")
-            print(f"✗ HTTP {e.response.status_code} for {ep_id}")
+            logging.error(f"HTTP {e.response.status_code} for {ep_id_str}: {str(e)}")
+            print(f"✗ HTTP {e.response.status_code} for {ep_id_str}")
     except Exception as e:
-        logging.error(f"Failed to update {ep_id}: {str(e)}")
-        print(f"✗ Failed to update {ep_id}: {str(e)}")
+        logging.error(f"Failed to update {ep_id_str}: {str(e)}")
+        print(f"✗ Failed to update {ep_id_str}: {str(e)}")
 
 def main():
     input_file = "update_ips.xlsx"
@@ -171,7 +173,8 @@ def main():
 
     try:
         df = pd.read_excel(input_file)
-        if not {"ep_id", "origin_ip", "backup_ip"}.issubset(df.columns):
+        required_columns = {"ep_id", "origin_ip", "backup_ip"}
+        if not required_columns.issubset(set(df.columns)):
             print("Input file must contain 'ep_id', 'origin_ip', and 'backup_ip' columns.")
             return
 
@@ -181,26 +184,14 @@ def main():
         
         print(f"Processing {total} records...")
         
-        for index, row in df.iterrows():
-            # Extract values and convert to Python scalars
-            ep_id = row['ep_id']
-            origin_ip = row['origin_ip']
-            backup_ip = row['backup_ip']
+        for index in range(len(df)):
+            # Get values by index to avoid pandas issues
+            ep_id = df.iloc[index]['ep_id']
+            origin_ip = df.iloc[index]['origin_ip']
+            backup_ip = df.iloc[index]['backup_ip']
             
-            # Convert pandas scalars to Python scalars
-            try:
-                ep_id = ep_id.item() if hasattr(ep_id, 'item') else ep_id
-            except:
-                pass
-            
-            # Check if EP ID is valid using a safer method
-            ep_id_is_na = False
-            try:
-                ep_id_is_na = pd.isna(ep_id)
-            except:
-                ep_id_is_na = ep_id is None or str(ep_id).strip() == ''
-            
-            if ep_id_is_na:
+            # Check if EP ID is valid using our safe function
+            if is_null_or_nan(ep_id):
                 print(f"Skipping row {index + 1}: empty EP ID")
                 continue
                 
