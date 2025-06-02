@@ -6,6 +6,7 @@ import keyring
 import getpass
 import os
 import warnings
+import json
 
 # Disable SSL warnings for dev environment
 warnings.filterwarnings('ignore', message='Unverified HTTPS request')
@@ -112,17 +113,24 @@ def update_server_pool(session, ep_id, origin_ip, backup_ip):
     url = BASE_URL_TEMPLATE.format(formatted_ep_id)
     
     try:
+        # First, get the current configuration
         response = session.get(url, timeout=30)
         response.raise_for_status()
-        config = response.json().get('result', {})
-
+        full_config = response.json()
+        
+        # Get the result section
+        config = full_config.get('result', {})
         server_pools = config.get("server_pools", [])
+        
         if not server_pools:
             logging.warning(f"No server pools found for {ep_id_str}")
             return
 
         pool = server_pools[0]
         existing_servers = pool.setdefault("server_list", [])
+
+        # Track if we made any changes
+        changes_made = False
 
         # Add origin if missing and valid
         if has_origin and not any(s.get("addr") == origin_ip_str for s in existing_servers):
@@ -132,6 +140,8 @@ def update_server_pool(session, ep_id, origin_ip, backup_ip):
                 "backup": False,
                 "enabled": True
             })
+            changes_made = True
+            logging.info(f"Added origin server {origin_ip_str} for {ep_id_str}")
 
         # Add backup if missing and valid
         if has_backup and not any(s.get("addr") == backup_ip_str for s in existing_servers):
@@ -141,15 +151,26 @@ def update_server_pool(session, ep_id, origin_ip, backup_ip):
                 "backup": True,
                 "enabled": True
             })
+            changes_made = True
+            logging.info(f"Added backup server {backup_ip_str} for {ep_id_str}")
+
+        if not changes_made:
+            print(f"⊙ No changes needed for {ep_id_str}")
+            return
 
         # Enable health check
         pool.setdefault("health", {})["health_check"] = True
 
         # Clean the server pools data before sending
         cleaned_server_pools = clean_server_pools(server_pools)
+        
+        # Prepare the complete configuration for PUT request
+        # Use the complete original structure but with updated server_pools
+        updated_config = config.copy()
+        updated_config["server_pools"] = cleaned_server_pools
 
-        # Send update
-        update_response = session.put(url, json={"server_pools": cleaned_server_pools})
+        # Send update with the complete configuration
+        update_response = session.put(url, json=updated_config)
         update_response.raise_for_status()
         logging.info(f"Updated {ep_id_str} with origin ({origin_ip_str}) and backup ({backup_ip_str})")
         print(f"✓ Updated {ep_id_str}")
@@ -158,6 +179,8 @@ def update_server_pool(session, ep_id, origin_ip, backup_ip):
         if e.response.status_code == 400:
             logging.error(f"Bad Request for {ep_id_str}: {e.response.text}")
             print(f"✗ Bad Request for {ep_id_str} - check data format")
+            # Log the request data for debugging
+            logging.debug(f"Request data that failed: {json.dumps(updated_config if 'updated_config' in locals() else 'N/A', indent=2)}")
         else:
             logging.error(f"HTTP {e.response.status_code} for {ep_id_str}: {str(e)}")
             print(f"✗ HTTP {e.response.status_code} for {ep_id_str}")
