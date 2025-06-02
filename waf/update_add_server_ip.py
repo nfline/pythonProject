@@ -62,15 +62,31 @@ def clean_server_pools(server_pools):
     return cleaned
 
 def update_server_pool(session, ep_id: str, origin_ip: str, backup_ip: str):
-    # Handle NaN values in input
+    # Handle NaN values in input and convert to scalar values
     if pd.isna(ep_id):
         logging.warning("EP ID is NaN, skipping")
         return
     
-    origin_ip = None if pd.isna(origin_ip) else str(origin_ip).strip()
-    backup_ip = None if pd.isna(backup_ip) else str(backup_ip).strip()
+    # Convert pandas values to Python scalars and handle NaN
+    try:
+        origin_ip = None if pd.isna(origin_ip) else str(origin_ip).strip()
+        if origin_ip == 'nan' or origin_ip == '':
+            origin_ip = None
+    except:
+        origin_ip = None
+        
+    try:
+        backup_ip = None if pd.isna(backup_ip) else str(backup_ip).strip()
+        if backup_ip == 'nan' or backup_ip == '':
+            backup_ip = None
+    except:
+        backup_ip = None
     
-    if not origin_ip and not backup_ip:
+    # Check if we have any valid IPs
+    has_origin = origin_ip is not None and origin_ip != ''
+    has_backup = backup_ip is not None and backup_ip != ''
+    
+    if not has_origin and not has_backup:
         logging.warning(f"No valid IPs for {ep_id}, skipping")
         return
     
@@ -91,7 +107,7 @@ def update_server_pool(session, ep_id: str, origin_ip: str, backup_ip: str):
         existing_servers = pool.setdefault("server_list", [])
 
         # Add origin if missing and valid
-        if origin_ip and not any(s.get("addr") == origin_ip for s in existing_servers):
+        if has_origin and not any(s.get("addr") == origin_ip for s in existing_servers):
             existing_servers.append({
                 "addr": origin_ip,
                 "port": 80,
@@ -100,7 +116,7 @@ def update_server_pool(session, ep_id: str, origin_ip: str, backup_ip: str):
             })
 
         # Add backup if missing and valid
-        if backup_ip and not any(s.get("addr") == backup_ip for s in existing_servers):
+        if has_backup and not any(s.get("addr") == backup_ip for s in existing_servers):
             existing_servers.append({
                 "addr": backup_ip,
                 "port": 80,
