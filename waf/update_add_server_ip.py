@@ -61,13 +61,29 @@ def clean_server_pools(server_pools):
         cleaned.append(cleaned_pool)
     return cleaned
 
-def update_server_pool(session, ep_id: str, origin_ip: str, backup_ip: str):
+def update_server_pool(session, ep_id, origin_ip, backup_ip):
+    # Convert all pandas values to Python scalars first
+    try:
+        ep_id = ep_id.item() if hasattr(ep_id, 'item') else ep_id
+    except:
+        pass
+    
+    try:
+        origin_ip = origin_ip.item() if hasattr(origin_ip, 'item') else origin_ip
+    except:
+        pass
+        
+    try:
+        backup_ip = backup_ip.item() if hasattr(backup_ip, 'item') else backup_ip
+    except:
+        pass
+    
     # Handle NaN values in input and convert to scalar values
     if pd.isna(ep_id):
         logging.warning("EP ID is NaN, skipping")
         return
     
-    # Convert pandas values to Python scalars and handle NaN
+    # Convert values to strings and handle NaN
     try:
         origin_ip = None if pd.isna(origin_ip) else str(origin_ip).strip()
         if origin_ip == 'nan' or origin_ip == '':
@@ -166,11 +182,25 @@ def main():
         print(f"Processing {total} records...")
         
         for index, row in df.iterrows():
+            # Extract values and convert to Python scalars
             ep_id = row['ep_id']
             origin_ip = row['origin_ip']
             backup_ip = row['backup_ip']
             
-            if pd.isna(ep_id):
+            # Convert pandas scalars to Python scalars
+            try:
+                ep_id = ep_id.item() if hasattr(ep_id, 'item') else ep_id
+            except:
+                pass
+            
+            # Check if EP ID is valid using a safer method
+            ep_id_is_na = False
+            try:
+                ep_id_is_na = pd.isna(ep_id)
+            except:
+                ep_id_is_na = ep_id is None or str(ep_id).strip() == ''
+            
+            if ep_id_is_na:
                 print(f"Skipping row {index + 1}: empty EP ID")
                 continue
                 
