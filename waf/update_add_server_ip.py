@@ -11,7 +11,7 @@ import json
 # Disable SSL warnings for dev environment
 warnings.filterwarnings('ignore', message='Unverified HTTPS request')
 
-APP_NAME = "keyring"
+APP_NAME = "waf"
 KEY_NAME = "keyring"
 BASE_URL_TEMPLATE = "https://api.appsec.fortinet.com/v2/waf/apps/{}/servers"
 
@@ -134,25 +134,29 @@ def update_server_pool(session, ep_id, origin_ip, backup_ip):
 
         # Add origin if missing and valid
         if has_origin and not any(s.get("addr") == origin_ip_str for s in existing_servers):
-            existing_servers.append({
+            new_origin_server = {
                 "addr": origin_ip_str,
                 "port": 80,
                 "backup": False,
                 "enabled": True,
-                "status": "enable"
-            })
+                "status": "enable",
+                "weight": 1
+            }
+            existing_servers.append(new_origin_server)
             changes_made = True
             logging.info(f"Added origin server {origin_ip_str} for {ep_id_str}")
 
         # Add backup if missing and valid
         if has_backup and not any(s.get("addr") == backup_ip_str for s in existing_servers):
-            existing_servers.append({
+            new_backup_server = {
                 "addr": backup_ip_str,
                 "port": 80,
                 "backup": True,
                 "enabled": True,
-                "status": "enable"
-            })
+                "status": "enable",
+                "weight": 1
+            }
+            existing_servers.append(new_backup_server)
             changes_made = True
             logging.info(f"Added backup server {backup_ip_str} for {ep_id_str}")
 
@@ -160,19 +164,41 @@ def update_server_pool(session, ep_id, origin_ip, backup_ip):
             print(f"⊙ No changes needed for {ep_id_str}")
             return
 
-        # Enable health check
-        pool.setdefault("health", {})["health_check"] = True
+        # Ensure health check configuration is properly set
+        if "health" not in pool:
+            pool["health"] = {}
+        
+        pool["health"]["health_check"] = True
+        
+        # Set default health check parameters if not present
+        if "health_check_domain" not in pool["health"]:
+            pool["health"]["health_check_domain"] = ""
+        if "health_check_interval" not in pool["health"]:
+            pool["health"]["health_check_interval"] = 10
+        if "health_check_timeout" not in pool["health"]:
+            pool["health"]["health_check_timeout"] = 3
+        if "health_check_up_retry" not in pool["health"]:
+            pool["health"]["health_check_up_retry"] = 1
+        if "health_check_down_retry" not in pool["health"]:
+            pool["health"]["health_check_down_retry"] = 3
 
         # Clean the server pools data before sending
         cleaned_server_pools = clean_server_pools(server_pools)
         
         # Prepare the complete configuration for PUT request
-        # Use the complete original structure but with updated server_pools
-        updated_config = config.copy()
-        updated_config["server_pools"] = cleaned_server_pools
+        # According to API documentation, send the complete configuration
+        put_data = {
+            "server_pools": cleaned_server_pools
+        }
+        
+        # Include other required fields if they exist in the original config
+        if "ssl_options" in config:
+            put_data["ssl_options"] = config["ssl_options"]
+        if "persistence" in config:
+            put_data["persistence"] = config["persistence"]
 
-        # Send update with the complete configuration
-        update_response = session.put(url, json=updated_config)
+        # Send update with the API-compliant format
+        update_response = session.put(url, json=put_data)
         update_response.raise_for_status()
         logging.info(f"Updated {ep_id_str} with origin ({origin_ip_str}) and backup ({backup_ip_str})")
         print(f"✓ Updated {ep_id_str}")
@@ -182,7 +208,10 @@ def update_server_pool(session, ep_id, origin_ip, backup_ip):
             logging.error(f"Bad Request for {ep_id_str}: {e.response.text}")
             print(f"✗ Bad Request for {ep_id_str} - check data format")
             # Log the request data for debugging
-            logging.debug(f"Request data that failed: {json.dumps(updated_config if 'updated_config' in locals() else 'N/A', indent=2)}")
+            logging.debug(f"Request data that failed: {json.dumps(put_data if 'put_data' in locals() else 'N/A', indent=2)}")
+        elif e.response.status_code == 404:
+            logging.error(f"Application {ep_id_str} not found")
+            print(f"✗ Application {ep_id_str} not found")
         else:
             logging.error(f"HTTP {e.response.status_code} for {ep_id_str}: {str(e)}")
             print(f"✗ HTTP {e.response.status_code} for {ep_id_str}")
