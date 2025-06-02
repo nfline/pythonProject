@@ -138,7 +138,8 @@ def update_server_pool(session, ep_id, origin_ip, backup_ip):
                 "addr": origin_ip_str,
                 "port": 80,
                 "backup": False,
-                "enabled": True
+                "enabled": True,
+                "status": "enable"
             })
             changes_made = True
             logging.info(f"Added origin server {origin_ip_str} for {ep_id_str}")
@@ -149,7 +150,8 @@ def update_server_pool(session, ep_id, origin_ip, backup_ip):
                 "addr": backup_ip_str,
                 "port": 80,
                 "backup": True,
-                "enabled": True
+                "enabled": True,
+                "status": "enable"
             })
             changes_made = True
             logging.info(f"Added backup server {backup_ip_str} for {ep_id_str}")
