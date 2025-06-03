@@ -8,36 +8,14 @@ import os
 import warnings
 import json
 
+# API Configuration
+APP_NAME = "waf"
+KEY_NAME = "keyring"
+BASE_URL_TEMPLATE = "https://api.appsec.fortinet.com/v2/waf/apps/{}/servers"
+
 # ================================
 # CONFIGURATION SECTION
 # ================================
-
-# HTTP vs HTTPS Configuration
-# 
-# For HTTP servers (default):
-# - Set ssl to false 
-# - Set port to 80
-# 
-# For HTTPS servers:
-# - Set ssl to true
-# - Set port to 443
-# - SSL/TLS settings will be automatically applied with Mozilla Intermediate defaults
-#
-# HTTPS includes these automatically configured SSL/TLS settings:
-# - TLS 1.2 and 1.3 enabled (TLS 1.1 disabled for security)
-# - Mozilla Intermediate cipher suite
-# - HTTP/2 disabled by default
-# - Server certificate authentication disabled by default
-#
-# 🔧 CUSTOMIZING HTTPS SETTINGS:
-# You can modify HTTPS_DEFAULT_CONFIG to customize:
-# - http2: Enable/disable HTTP/2
-# - tls_1_1, tls_1_2, tls_1_3: Enable/disable TLS versions
-# - enc_level: "mozilla_intermediate", "mozilla_modern", etc.
-# - cert_verify: Enable/disable server certificate authentication
-# - ssl_custom_cipher: Custom cipher suites
-#
-# Or use presets: Update HTTPS_DEFAULT_CONFIG with HTTPS_PRESETS["secure"]
 
 # Health Check Configuration - Set your preferences here
 ENABLE_HEALTH_CHECK = True  # Set to True to enable, False to disable
@@ -51,30 +29,8 @@ HEALTH_CHECK_CONFIG = {
     "code": 200             # Expected response code (200-599)
 }
 
-# API Configuration
-APP_NAME = "waf"
-KEY_NAME = "keyring"
-BASE_URL_TEMPLATE = "https://api.appsec.fortinet.com/v2/waf/apps/{}/servers"
-
-# Server Configuration Defaults (based on API constraints)
-# These values will be applied to newly added servers
-# To change port or weight for new servers, modify these values:
-#
-# Quick configuration examples:
-# 
-# For HTTP servers:
-# DEFAULT_SERVER_CONFIG = {
-#     "ssl": false,
-#     "port": 80,
-#     "status": "enable", "type": "ip", "weight": 1
-# }
-#
-# For HTTPS servers:
-# DEFAULT_SERVER_CONFIG = {
-#     "ssl": true, 
-#     "port": 443,
-#     "status": "enable", "type": "ip", "weight": 1
-# }
+# Server Configuration Defaults
+# Note:These values will be applied to newly added servers only.
 
 DEFAULT_SERVER_CONFIG = {
     "status": "enable",      # Options: enable, disable, maintenance
@@ -85,61 +41,10 @@ DEFAULT_SERVER_CONFIG = {
 }
 
 # HTTPS Default Configuration (when ssl is set to true)
-# 🔧 You can customize these HTTPS settings according to your needs:
-HTTPS_DEFAULT_CONFIG = {
-    # Basic HTTPS settings (based on interface options)
-    "http2": False,          # HTTP/2 toggle (HTTP/2 option in interface)
-    "tls_1_1": False,        # TLS 1.1 toggle (TLS 1.1 option in interface) - recommended disabled
-    "tls_1_2": True,         # TLS 1.2 toggle (TLS 1.2 option in interface) - recommended enabled
-    "tls_1_3": True,         # TLS 1.3 toggle (TLS 1.3 option in interface) - recommended enabled
-    "enc_level": "mozilla_intermediate",  # SSL/TLS Encryption Level (interface dropdown)
-    "cert_verify": False,    # Server Certificate Authentication (interface toggle)
-    
-    # Cipher suite configuration (advanced users can modify)
-    "ssl_custom_cipher": [
-        "ECDHE-ECDSA-AES128-GCM-SHA256",
-        "ECDHE-RSA-AES128-GCM-SHA256", 
-        "ECDHE-ECDSA-AES256-GCM-SHA384",
-        "ECDHE-RSA-AES256-GCM-SHA384",
-        "ECDHE-ECDSA-CHACHA20-POLY1305",
-        "ECDHE-RSA-CHACHA20-POLY1305",
-        "DHE-RSA-AES128-GCM-SHA256",
-        "DHE-RSA-AES256-GCM-SHA384"
-    ],
-    "tls13_custom_cipher": [
-        "TLS_AES_128_GCM_SHA256",
-        "TLS_AES_256_GCM_SHA384", 
-        "TLS_CHACHA20_POLY1305_SHA256"
-    ],
-    "ssl_custom_cipher_http2": [
-        "ECDHE-ECDSA-AES128-GCM-SHA256",
-        "ECDHE-RSA-AES128-GCM-SHA256",
-        "ECDHE-ECDSA-AES256-GCM-SHA384", 
-        "ECDHE-RSA-AES256-GCM-SHA384",
-        "ECDHE-ECDSA-CHACHA20-POLY1305",
-        "ECDHE-RSA-CHACHA20-POLY1305",
-        "DHE-RSA-AES128-GCM-SHA256",
-        "DHE-RSA-AES256-GCM-SHA384"
-    ]
-}
 
-# Common HTTPS configuration presets (optional to use)
-HTTPS_PRESETS = {
-    "secure": {        # High security configuration
-        "http2": False,
-        "tls_1_1": False, "tls_1_2": True, "tls_1_3": True,
-        "enc_level": "mozilla_modern", "cert_verify": True
-    },
-    "compatible": {    # Compatibility configuration
-        "http2": False, 
-        "tls_1_1": True, "tls_1_2": True, "tls_1_3": True,
-        "enc_level": "mozilla_intermediate", "cert_verify": False
-    },
-    "modern": {        # Modern configuration
-        "http2": True,
-        "tls_1_1": False, "tls_1_2": True, "tls_1_3": True,  
-        "enc_level": "mozilla_modern", "cert_verify": False
-    }
+HTTPS_DEFAULT_CONFIG = {
+    "http2": False,          # HTTP/2 toggle (can be enabled/disabled as needed)
+    "enc_level": "mozilla_intermediate",  # SSL/TLS Encryption Level
 }
 
 # File Configuration
@@ -163,16 +68,6 @@ def get_api_key():
         api_key = getpass.getpass("Enter API Key: ").strip()
         keyring.set_password(APP_NAME, KEY_NAME, api_key)
     return api_key
-
-def create_session():
-    session = requests.Session()
-    session.headers.update({
-        'Authorization': f'Basic {get_api_key()}',
-        'Accept': 'application/json',
-        'Content-Type': 'application/json'
-    })
-    session.verify = False
-    return session
 
 def is_null_or_nan(value):
     """Safely check if a value is null, NaN, or empty"""
@@ -202,38 +97,6 @@ def safe_convert_to_string(value):
         return result
     except:
         return None
-
-def clean_server_pools(server_pools):
-    """Clean server pools data to handle NaN values for JSON compliance"""
-    def clean_value(value):
-        if is_null_or_nan(value):
-            return None
-        return value
-    
-    cleaned = []
-    for pool in server_pools:
-        cleaned_pool = {}
-        for key, value in pool.items():
-            if isinstance(value, dict):
-                cleaned_pool[key] = {k: clean_value(v) for k, v in value.items() if clean_value(v) is not None}
-            elif isinstance(value, list):
-                cleaned_list = []
-                for item in value:
-                    if isinstance(item, dict):
-                        cleaned_item = {k: clean_value(v) for k, v in item.items() if clean_value(v) is not None}
-                        if cleaned_item:
-                            cleaned_list.append(cleaned_item)
-                    else:
-                        cleaned_item = clean_value(item)
-                        if cleaned_item is not None:
-                            cleaned_list.append(cleaned_item)
-                cleaned_pool[key] = cleaned_list
-            else:
-                cleaned_value = clean_value(value)
-                if cleaned_value is not None:
-                    cleaned_pool[key] = cleaned_value
-        cleaned.append(cleaned_pool)
-    return cleaned
 
 def configure_health_check(pool, enable_health_check=True):
     """
@@ -458,7 +321,9 @@ def create_server_config(ip_address, is_backup=False, port=None, weight=None, st
             # Apply HTTPS configuration if ssl is True
             if ssl:
                 config.update(HTTPS_DEFAULT_CONFIG)
-                logging.info(f"Applied HTTPS default configuration for server {ip_address}")
+                enc_level = HTTPS_DEFAULT_CONFIG.get("enc_level", "mozilla_intermediate")
+                http2_status = "enabled" if HTTPS_DEFAULT_CONFIG.get("http2", False) else "disabled"
+                logging.info(f"Applied HTTPS configuration for server {ip_address}: enc_level={enc_level}, http2={http2_status}")
     else:
         # Fallback to minimal config if no template available
         config = {
@@ -477,7 +342,9 @@ def create_server_config(ip_address, is_backup=False, port=None, weight=None, st
         # Apply HTTPS configuration if ssl is True
         if config.get("ssl"):
             config.update(HTTPS_DEFAULT_CONFIG)
-            logging.info(f"Applied HTTPS default configuration for server {ip_address}")
+            enc_level = HTTPS_DEFAULT_CONFIG.get("enc_level", "mozilla_intermediate")
+            http2_status = "enabled" if HTTPS_DEFAULT_CONFIG.get("http2", False) else "disabled"
+            logging.info(f"Applied HTTPS configuration for server {ip_address}: enc_level={enc_level}, http2={http2_status}")
     
     # Validate port range
     if not (1 <= config["port"] <= 65534):
