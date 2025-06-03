@@ -12,6 +12,21 @@ import json
 # CONFIGURATION SECTION
 # ================================
 
+# HTTP vs HTTPS Configuration
+# 
+# For HTTP servers (default):
+# - Set ssl to False 
+# - Set port to 80
+# 
+# For HTTPS servers:
+# - Set ssl to True
+# - Set port to 443
+# 
+# Note: The API uses only the "ssl" field to distinguish HTTP/HTTPS
+# - ssl: false = HTTP server
+# - ssl: true = HTTPS server
+# There is no separate "protocol" field in the API
+
 # Health Check Configuration - Set your preferences here
 ENABLE_HEALTH_CHECK = True  # Set to True to enable, False to disable
 HEALTH_CHECK_CONFIG = {
@@ -29,15 +44,32 @@ APP_NAME = "waf"
 KEY_NAME = "keyring"
 BASE_URL_TEMPLATE = "https://api.appsec.fortinet.com/v2/waf/apps/{}/servers"
 
-# Server Configuration Defaults (based on UI constraints)
+# Server Configuration Defaults (based on API constraints)
 # These values will be applied to newly added servers
-# To change port or weight for new servers, modify these values:
+# To change port, weight, or SSL settings for new servers, modify these values:
+#
+# Quick configuration examples:
+# 
+# For HTTP servers (default):
+# DEFAULT_SERVER_CONFIG = {
+#     "ssl": False,
+#     "port": 80,
+#     "status": "enable", "type": "ip", "weight": 1
+# }
+#
+# For HTTPS servers:
+# DEFAULT_SERVER_CONFIG = {
+#     "ssl": True, 
+#     "port": 443,
+#     "status": "enable", "type": "ip", "weight": 1
+# }
+
 DEFAULT_SERVER_CONFIG = {
     "status": "enable",      # Options: enable, disable, maintenance
     "type": "ip",           # Options: ip, domain, dynamic
     "port": 80,             # Range: 1-65534 (change this to set default port)
     "weight": 1,            # Range: 1-9999 (change this to set default weight)
-    "protocol": "http"      # Options: http, https (change this to set default protocol)
+    "ssl": False            # Options: True (HTTPS), False (HTTP)
 }
 
 # File Configuration
@@ -221,7 +253,7 @@ def update_server_pool(session, ep_id, origin_ip, backup_ip, enable_health_check
                 weight=DEFAULT_SERVER_CONFIG["weight"], # Use configured default weight
                 status=DEFAULT_SERVER_CONFIG["status"], # Use configured default status
                 server_type=DEFAULT_SERVER_CONFIG["type"], # Use configured default type
-                protocol=DEFAULT_SERVER_CONFIG["protocol"], # Use configured default protocol
+                ssl=DEFAULT_SERVER_CONFIG["ssl"],       # Use configured default SSL setting
                 template_server=template_server
             )
             new_origin_server["idx"] = max_idx + 1
@@ -229,7 +261,7 @@ def update_server_pool(session, ep_id, origin_ip, backup_ip, enable_health_check
             existing_servers.append(new_origin_server)
             changes_made = True
             logging.info(f"Added origin server {origin_ip_str} for {ep_id_str}")
-            logging.info(f"Origin server config: port={new_origin_server.get('port')}, weight={new_origin_server.get('weight')}, status={new_origin_server.get('status')}, type={new_origin_server.get('type')}, protocol={new_origin_server.get('protocol')}")
+            logging.info(f"Origin server config: port={new_origin_server.get('port')}, weight={new_origin_server.get('weight')}, status={new_origin_server.get('status')}, type={new_origin_server.get('type')}, ssl={new_origin_server.get('ssl')}")
 
         # Add backup if missing and valid
         if has_backup and not any(s.get("addr") == backup_ip_str for s in existing_servers):
@@ -245,7 +277,7 @@ def update_server_pool(session, ep_id, origin_ip, backup_ip, enable_health_check
                 weight=DEFAULT_SERVER_CONFIG["weight"], # Use configured default weight
                 status=DEFAULT_SERVER_CONFIG["status"], # Use configured default status
                 server_type=DEFAULT_SERVER_CONFIG["type"], # Use configured default type
-                protocol=DEFAULT_SERVER_CONFIG["protocol"], # Use configured default protocol
+                ssl=DEFAULT_SERVER_CONFIG["ssl"],       # Use configured default SSL setting
                 template_server=template_server
             )
             new_backup_server["idx"] = max_idx + 1
@@ -253,7 +285,7 @@ def update_server_pool(session, ep_id, origin_ip, backup_ip, enable_health_check
             existing_servers.append(new_backup_server)
             changes_made = True
             logging.info(f"Added backup server {backup_ip_str} for {ep_id_str}")
-            logging.info(f"Backup server config: port={new_backup_server.get('port')}, weight={new_backup_server.get('weight')}, status={new_backup_server.get('status')}, type={new_backup_server.get('type')}, protocol={new_backup_server.get('protocol')}")
+            logging.info(f"Backup server config: port={new_backup_server.get('port')}, weight={new_backup_server.get('weight')}, status={new_backup_server.get('status')}, type={new_backup_server.get('type')}, ssl={new_backup_server.get('ssl')}")
 
         if changes_made:
             # Configure health check (after server updates, before PUT request)
@@ -320,7 +352,7 @@ def update_server_pool(session, ep_id, origin_ip, backup_ip, enable_health_check
         print(f"✗ Failed to update {ep_id_str}: {str(e)}")
         return False
 
-def create_server_config(ip_address, is_backup=False, port=None, weight=None, status=None, server_type=None, protocol=None, template_server=None):
+def create_server_config(ip_address, is_backup=False, port=None, weight=None, status=None, server_type=None, ssl=None, template_server=None):
     """
     Create a standardized server configuration based on existing server template
     
@@ -331,30 +363,25 @@ def create_server_config(ip_address, is_backup=False, port=None, weight=None, st
         weight (int): Server weight (1-9999), defaults to 1
         status (str): Server status (enable/disable/maintenance), defaults to enable
         server_type (str): Server type (ip, domain, dynamic), defaults to ip
-        protocol (str): Server protocol (http, https), defaults to http
+        ssl (bool): SSL setting (True for HTTPS, False for HTTP), defaults to False
         template_server (dict): Existing server to use as template
     
     Returns:
         dict: Server configuration dictionary
     """
     if template_server:
-        # Copy the existing server structure and modify key fields
-        config = template_server.copy()
-        config["addr"] = ip_address
-        config["backup"] = is_backup
-        # Always update port, weight, status if explicitly provided (not None)
-        if port is not None:
-            config["port"] = port
-        if weight is not None:
-            config["weight"] = weight
-        if status is not None:
-            config["status"] = status
-        if server_type is not None:
-            config["type"] = server_type
-        if protocol is not None:
-            config["protocol"] = protocol
+        # Copy only essential fields from existing server, avoid complex SSL configurations
+        config = {
+            "addr": ip_address,
+            "backup": is_backup,
+            "status": status if status is not None else template_server.get("status", "enable"),
+            "type": server_type if server_type is not None else template_server.get("type", "ip"),
+            "port": port if port is not None else template_server.get("port", 80),
+            "weight": weight if weight is not None else template_server.get("weight", 1),
+            "ssl": ssl if ssl is not None else template_server.get("ssl", False)
+        }
     else:
-        # Fallback to minimal config if no template available
+        # Create minimal config if no template available
         config = {
             "addr": ip_address,
             "backup": is_backup,
@@ -362,11 +389,7 @@ def create_server_config(ip_address, is_backup=False, port=None, weight=None, st
             "type": server_type or DEFAULT_SERVER_CONFIG["type"],
             "port": port or DEFAULT_SERVER_CONFIG["port"],
             "weight": weight or DEFAULT_SERVER_CONFIG["weight"],
-            "protocol": protocol or DEFAULT_SERVER_CONFIG["protocol"],
-            # Essential fields required by API
-            "ssl": False,
-            "http2": False,
-            "cert_verify": False
+            "ssl": ssl if ssl is not None else DEFAULT_SERVER_CONFIG["ssl"]
         }
     
     # Validate port range
@@ -391,11 +414,14 @@ def create_server_config(ip_address, is_backup=False, port=None, weight=None, st
         logging.warning(f"Invalid server type '{config['type']}', using default 'ip'")
         config["type"] = "ip"
     
-    # Validate protocol
-    valid_protocols = ["http", "https"]
-    if config["protocol"] not in valid_protocols:
-        logging.warning(f"Invalid protocol '{config['protocol']}', using default 'http'")
-        config["protocol"] = "http"
+    # Validate SSL setting
+    if not isinstance(config["ssl"], bool):
+        logging.warning(f"Invalid SSL value '{config['ssl']}', using default False")
+        config["ssl"] = False
+    
+    # Log the protocol being used
+    protocol_type = "HTTPS" if config["ssl"] else "HTTP"
+    logging.info(f"Created {protocol_type} server config for {ip_address}")
     
     return config
 
@@ -403,6 +429,10 @@ def main():
     """Main function"""
     print("=== WAF Server Pool Management ===")
     print("Function: Update server pool configuration based on Excel file")
+    
+    # Display current configuration
+    ssl_status = "HTTPS" if DEFAULT_SERVER_CONFIG["ssl"] else "HTTP"
+    print(f"\n🔧 Default server configuration: {ssl_status}, Port: {DEFAULT_SERVER_CONFIG['port']}")
     
     # Display health check status
     if ENABLE_HEALTH_CHECK:
